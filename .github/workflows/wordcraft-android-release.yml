@@ -162,9 +162,13 @@ jobs:
           BT="$ANDROID_HOME/build-tools/${BT_VERSION}"
           PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
           B="$RUNNER_TEMP/apk"
-          mkdir -p "$B/res/drawable" dist
+          mkdir -p "$B/classes" "$B/dex" "$B/res/drawable" dist
           cp assets/app-icon/hicolor/256x256/apps/ai.storyteller.wordcraft.png "$B/res/drawable/icon.png"
 
+          javac -encoding UTF-8 --release 8 -classpath "$PLATFORM" -d "$B/classes" \
+            packaging/android/java/ai/storyteller/wordcraft/*.java
+          jar cf "$B/classes.jar" -C "$B/classes" .
+          "$BT/d8" --release --min-api 28 --lib "$PLATFORM" --output "$B/dex" "$B/classes.jar"
           "$BT/aapt2" compile --dir "$B/res" -o "$B/resources.zip"
           "$BT/aapt2" link -I "$PLATFORM" --manifest packaging/android/AndroidManifest.xml \
             --version-code "$(( $(date +%s) / 60 ))" --version-name "${VERSION}-android.${GITHUB_RUN_NUMBER}" \
@@ -175,6 +179,7 @@ jobs:
           from pathlib import Path
           b = Path(os.environ["B"])
           with zipfile.ZipFile(b / "unsigned.apk", "a", compression=zipfile.ZIP_DEFLATED) as z:
+              z.write(b / "dex/classes.dex", "classes.dex")
               z.write(os.environ["LIB"], "lib/arm64-v8a/libwordcraft_android.so")
               for p in ["LICENSE-MIT", "LICENSE-APACHE", "ATTRIBUTION.md",
                         "assets/app-icon/LICENSE.txt", "vendor/winit/LICENSE"]:
