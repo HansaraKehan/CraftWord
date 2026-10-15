@@ -1,0 +1,210 @@
+name: Build and release WordCraft Android APK
+
+# Builds the newest upstream WordCraft (storytold/wordcraft) with the Android layer
+# applied on top, then publishes the APK as a GitHub Release.
+# It only builds when upstream has something new (or when you run it by hand).
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream branch or tag to build (empty = main)"
+        required: false
+        default: ""
+      force:
+        description: "Build again even if this upstream version already has a release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: storytold/wordcraft
+  TARGET: aarch64-linux-android
+  NDK_VERSION: 28.2.13676358
+  BT_VERSION: 35.0.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Pick the upstream ref
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          VAR_REF: ${{ vars.UPSTREAM_REF }}
+        run: |
+          REF="${INPUT_REF:-${VAR_REF:-main}}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Check out this repository (the Android layer lives here)
+        uses: actions/checkout@v4
+        with:
+          path: fork
+
+      - name: Check out upstream WordCraft
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
+          path: src
+
+      - name: Work out the release tag
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          VER=$(grep -m1 '^version' src/Cargo.toml | cut -d'"' -f2)
+          SHA=$(git -C src rev-parse --short=7 HEAD)
+          TAG="android-v${VER}-${SHA}"
+          {
+            echo "version=$VER"
+            echo "sha=$SHA"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG already exists - nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Add the Android layer on top of upstream
+        if: steps.ver.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          mkdir -p "$RUNNER_TEMP/layer"
+          tar xzf ../fork/android-layer/wordcraft-android-layer.tar.gz -C "$RUNNER_TEMP/layer"
+          python3 "$RUNNER_TEMP/layer/apply_layer.py"
+
+      - uses: actions/setup-java@v4
+        if: steps.ver.outputs.skip != 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install the Rust version upstream asks for
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          RUSTV=$(grep -m1 '^rust-version' src/Cargo.toml | cut -d'"' -f2)
+          rustup toolchain install "${RUSTV:-stable}" --profile minimal --target "$TARGET"
+          rustup default "${RUSTV:-stable}"
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.skip != 'true'
+        with:
+          workspaces: src
+          key: android-arm64
+
+      - name: Install Android SDK parts
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;${BT_VERSION}" "ndk;${NDK_VERSION}"
+
+      - name: Build native library (Rust)
+        if: steps.ver.outputs.skip != 'true'
+        working-directory: src
+        run: |
+          BIN="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android28-clang"
+          export CC_aarch64_linux_android="$BIN/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$BIN/llvm-ar"
+          export CARGO_PROFILE_RELEASE_LTO=false
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+          cargo build -p wordcraft-android --target "$TARGET" --release -j 3
+
+      - name: Restore signing key
+        if: steps.ver.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/wordcraft-signing
+          key: wordcraft-signing-v1
+
+      - name: Create signing key if missing
+        if: steps.ver.outputs.skip != 'true'
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p ~/wordcraft-signing
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > ~/wordcraft-signing/key.p12
+            printf '%s' "$KS_PASS" > ~/wordcraft-signing/password.txt
+          elif [ ! -f ~/wordcraft-signing/key.p12 ]; then
+            openssl rand -base64 24 > ~/wordcraft-signing/password.txt
+            keytool -genkeypair -keystore ~/wordcraft-signing/key.p12 -storetype PKCS12 \
+              -storepass:file ~/wordcraft-signing/password.txt -alias wordcraft \
+              -keyalg RSA -keysize 3072 -validity 10000 \
+              -dname "CN=WordCraft Personal Android Build"
+          fi
+
+      - name: Package and sign the APK
+        if: steps.ver.outputs.skip != 'true'
+        working-directory: src
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          BT="$ANDROID_HOME/build-tools/${BT_VERSION}"
+          PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
+          B="$RUNNER_TEMP/apk"
+          mkdir -p "$B/res/drawable" dist
+          cp assets/app-icon/hicolor/256x256/apps/ai.storyteller.wordcraft.png "$B/res/drawable/icon.png"
+
+          "$BT/aapt2" compile --dir "$B/res" -o "$B/resources.zip"
+          "$BT/aapt2" link -I "$PLATFORM" --manifest packaging/android/AndroidManifest.xml \
+            --version-code "$(( $(date +%s) / 60 ))" --version-name "${VERSION}-android.${GITHUB_RUN_NUMBER}" \
+            -o "$B/unsigned.apk" "$B/resources.zip"
+
+          B="$B" LIB="target/${TARGET}/release/libwordcraft_android.so" python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          b = Path(os.environ["B"])
+          with zipfile.ZipFile(b / "unsigned.apk", "a", compression=zipfile.ZIP_DEFLATED) as z:
+              z.write(os.environ["LIB"], "lib/arm64-v8a/libwordcraft_android.so")
+              for p in ["LICENSE-MIT", "LICENSE-APACHE", "ATTRIBUTION.md",
+                        "assets/app-icon/LICENSE.txt", "vendor/winit/LICENSE"]:
+                  if Path(p).exists():
+                      z.write(p, "assets/licenses/" + p.replace("/", "_"))
+          PY
+
+          "$BT/zipalign" -f -P 16 4 "$B/unsigned.apk" "$B/aligned.apk"
+          APK="dist/WordCraft-${VERSION}-android-arm64-v8a.apk"
+          "$BT/apksigner" sign --ks ~/wordcraft-signing/key.p12 --ks-key-alias wordcraft \
+            --ks-pass "file:$HOME/wordcraft-signing/password.txt" --out "$APK" "$B/aligned.apk"
+          "$BT/apksigner" verify --verbose "$APK"
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        if: steps.ver.outputs.skip != 'true'
+        working-directory: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ steps.ver.outputs.sha }}
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          cat > notes.md <<NOTES
+          **WordCraft ${VERSION} for Android** (early preview, ARM64)
+
+          Built automatically from upstream \`${UPSTREAM}\` at \`${REF}\` (commit \`${SHA}\`) with the Android layer applied. This is an early preview: a hardware keyboard is recommended, and documents open and save through the built-in file browser (turn on Settings > Apps > WordCraft > Permissions > Files > All files access).
+
+          - Needs an ARM64 phone or tablet running Android 9 or newer.
+          - Download the \`.apk\`, open it, and allow installs from your file manager or browser when Android asks.
+          - Unofficial build, not made or supported by the WordCraft team. If an update will not install over an older build, uninstall the old one first.
+          NOTES
+          gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "WordCraft ${VERSION} Android (${SHA})" --notes-file notes.md
