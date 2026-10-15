@@ -96,9 +96,11 @@ jobs:
       - name: Install the Rust version upstream asks for
         if: steps.ver.outputs.skip != 'true'
         run: |
+          # egui 0.36 needs Rust 1.95 even where the workspace still says 1.90: never go below it.
           RUSTV=$(grep -m1 '^rust-version' src/Cargo.toml | cut -d'"' -f2)
-          rustup toolchain install "${RUSTV:-stable}" --profile minimal --target "$TARGET"
-          rustup default "${RUSTV:-stable}"
+          RUSTV=$(printf '%s\n%s\n' "${RUSTV:-1.95}" "1.95" | sort -V | tail -n1)
+          rustup toolchain install "$RUSTV" --profile minimal --target "$TARGET"
+          rustup default "$RUSTV"
           rustc --version
 
       - uses: Swatinem/rust-cache@v2
