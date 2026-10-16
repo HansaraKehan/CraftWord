@@ -10,19 +10,26 @@ not as a web page.
 > **Early preview.** This is a first working port, not a finished product. See [Limitations](#limitations).
 
 This repository does not contain WordCraft's source. A GitHub Actions workflow downloads the upstream source,
-adds a small Android layer, builds the APK and publishes it under [Releases](https://github.com/HansaraKehan/CraftWord/releases).
+adds a small Android layer, builds the APK and publishes it under [Releases](../../releases).
 
 ## Download
 
-Get the latest `.apk` from the [Releases](https://github.com/HansaraKehan/CraftWord/releases) page, open it and allow the install when Android asks.
+Get the latest `.apk` from the [Releases](../../releases) page, open it and allow the install when Android asks.
 You need:
 
 - an ARM64 phone or tablet (most devices from the last several years)
 - Android 9 or newer
 - a GPU with Vulkan or OpenGL ES 3
 
-To open and save documents, turn on **All files access** for the app:
-Settings → Apps → WordCraft → Permissions → Files.
+No storage permission is needed. File ▸ Open and File ▸ Save As use Android's own file picker, so you can pick
+documents anywhere: internal storage, an SD card, or cloud apps such as Google Drive.
+
+WordCraft works on a private copy of the document you pick and writes every save back to the original location
+within a couple of seconds. If the source is read-only (for example an email attachment), use **Save As** to choose a
+place you can write to.
+
+You can also open a document from another app: choose **WordCraft** in the "Open with" list for `.docx`, `.doc`, `.odt`,
+`.rtf` and plain text files.
 
 If an update won't install over an older build, uninstall the old one first.
 
@@ -30,7 +37,6 @@ If an update won't install over an older build, uninstall the old one first.
 
 - A hardware keyboard is recommended. Typing with the on-screen keyboard may be unreliable.
 - Preferences are not saved between launches.
-- Documents open and save through WordCraft's built-in file browser, not Android's system picker.
 - No printing, and no clipboard images or formatted paste yet.
 - The interface is the desktop layout; it is not redesigned for small touch screens.
 
