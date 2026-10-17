@@ -1,6 +1,6 @@
 <img width="2304" height="1440" alt="Screenshot_20261016_160056" src="https://github.com/user-attachments/assets/0e96585f-3dda-4ea9-8cd8-97434c9d3d19" />
 
-github/downloads/HansaraKehan/CraftPhoto/total
+[github/downloads/HansaraKehan/CraftPhoto/total](https://img.shields.io/github/downloads/HansaraKehan/CraftWord/total)
 
 # WordCraft for Android (early preview)
 
