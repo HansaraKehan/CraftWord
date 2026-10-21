@@ -87,7 +87,7 @@
 	Formatting	Formattazione
 	In the margin	A margine
 	Include level number from:	Includi numero di livello da:
-	Ink	Penna
+	Ink	Input penna
 	Insertions and Deletions	Inserimenti ed eliminazioni
 	Insertions:	Inserimenti:
 	Left border	Bordo sinistro
@@ -144,6 +144,7 @@
 	Apply to:	Applica a:
 	Whole document	Tutto il documento
 	This section	Questa sezione
+	Selected text	Testo selezionato
 	Fill	Riempimento
 	Setting:	Impostazione:
 	3-D	3D
@@ -189,7 +190,7 @@
 	Check Accessibility	Verifica accessibilità
 	Check Compatibility	Verifica compatibilità
 	Check Spelling as You Type	Controlla ortografia durante la digitazione
-	Check for Errors	Controllo errori
+	Check for Errors	Controlla errori
 	Check\nAccessibility	Verifica\naccessibilità
 	Citation Style	Stile citazione
 	Citations & Bibliography	Citazioni e bibliografia
@@ -402,7 +403,7 @@
 	Illustrations	Illustrazioni
 	Immersive	Immersiva
 	Immersive Reader	Strumento di lettura immersiva
-	Immersive\nReader	Lettore\nimmersivo
+	Immersive\nReader	Strumento di\nlettura immersiva
 	Increase Font Size	Aumenta dimensione carattere
 	Increase Indent	Aumenta rientro
 	Indent	Rientro
@@ -430,7 +431,7 @@
 	Insert Right	Inserisci a destra
 	Insert Shapes	Inserisci forme
 	Insert Table	Inserisci tabella
-	Insert Table of Authorities	Inserisci indice delle autorità
+	Insert Table of Authorities	Inserisci indice delle fonti
 	Insert Table of Figures	Inserisci indice delle figure
 	Insert Table…	Inserisci tabella…
 	Insert\nAbove	Inserisci\nsopra
@@ -469,11 +470,11 @@
 	Line	Linea
 	Line Break	Interruzione di riga
 	Line breaking	Divisione delle righe
-	Line End	Fine linea
+	Line End	Fine riga
 	Line Numbers	Numeri di riga
 	Line Spacing	Interlinea
 	Line Spacing Options…	Opzioni interlinea…
-	Line Start	Inizio linea
+	Line Start	Inizio riga
 	Line and Page Breaks	Interruzioni di riga e di pagina
 	Line and Paragraph Spacing	Interlinea e spaziatura paragrafo
 	Line delta	Differenza righe
@@ -487,14 +488,14 @@
 	Location: {path}	Percorso: {path}
 	MIT OR Apache-2.0. Copyright (c) 2026 ArtCraft Team and the WordCraft contributors.	MIT OR Apache-2.0. Copyright (c) 2026 ArtCraft Team e i collaboratori di WordCraft.
 	Macros	Macro
-	Mailings	Mail
-	Manage Sources	Gestione fonti
+	Mailings	Lettere
+	Manage Sources	Gestisci fonti
 	Many pages	Più pagine
 	Margins	Margini
 	Mark Citation	Segna citazione
 	Mark Entry	Segna voce
-	Mark\nCitation	Contrassegna\ncitazione
-	Mark\nEntry	Contrassegna\nvoce
+	Mark\nCitation	Segna\ncitazione
+	Mark\nEntry	Segna\nvoce
 	Markdown (*.md)	Markdown (*.md)
 	Match Fields	Corrispondenza campi
 	Match case	Maiuscole/minuscole
@@ -510,6 +511,10 @@
 	More templates →	Altri modelli →
 	Move or Resize	Sposta o ridimensiona
 	Multilevel List	Elenco a più livelli
+	Multilevel List Library	Raccolta elenchi a più livelli
+	Article I.	Articolo I.
+	Chapter 1	Capitolo 1
+	Section 1.01	Sezione 1.01
 	Multiple Pages	Più pagine
 	Name (A–Z)	Nome (A–Z)
 	Name:	Nome:
@@ -644,7 +649,7 @@
 	Record Macro	Registra macro
 	Recover Unsaved Documents	Recupera documenti non salvati
 	Rectangle	Rettangolo
-	Redo	Ripeti
+	Redo	Ripristina
 	Reduce Hanging Indent	Riduci rientro sporgente
 	References	Riferimenti
 	Reject	Rifiuta
@@ -678,7 +683,7 @@
 	Restart Each Section	Ricomincia a ogni sezione
 	Restart at 1	Ricomincia da 1
 	Restrict Editing	Limita modifica
-	Restrict\nEditing	Limita\nmodifiche
+	Restrict\nEditing	Limita\nmodifica
 	Result	Risultato
 	Results	Risultati
 	Reverse the order	Inverti l'ordine
@@ -714,7 +719,7 @@
 	Select	Seleziona
 	Select All	Seleziona tutto
 	Select Cell	Seleziona cella
-	Select Line	Seleziona linea
+	Select Line	Seleziona riga
 	Select Objects	Seleziona oggetti
 	Select Paragraph	Seleziona paragrafo
 	Select Range	Seleziona intervallo
@@ -736,7 +741,7 @@
 	Set Paragraph Formatting	Imposta formattazione paragrafo
 	Set as Default	Imposta come predefinito
 	Shading	Sfondo
-	Shadow	Ombra
+	Shadow	Ombreggiatura
 	Shape Fill	Riempimento forma
 	Shape Format	Formato forma
 	Shape Outline	Contorno forma
@@ -773,6 +778,8 @@
 	Space before/after:	Spazio prima/dopo:
 	Spacing	Spaziatura
 	Spacing (pt):	Spaziatura (pt):
+	Kerning for fonts:	Crenatura per i caratteri:
+	Points and above	punti e oltre
 	Speech	Voce
 	Spelling & Grammar	Ortografia e grammatica
 	Spelling &\nGrammar	Ortografia e\ngrammatica
@@ -818,14 +825,14 @@
 	Table Styles	Stili tabella
 	Table of Authorities	Indice delle fonti
 	Table of Contents	Sommario
-	Table of\nContents	Inserisci\nsommario
+	Table of\nContents	Sommario
 	Tables	Tabelle
 	Tabs	Tabulazioni
 	Tabular List	Elenco tabulare
 	Text	Testo
 	Text Box	Casella di testo
 	Text Direction	Direzione testo
-	Text Effects	Effetti di testo e tipografia
+	Text Effects	Effetti di testo
 	Text Effects and Typography	Effetti di testo e tipografia
 	Text Highlight Color	Colore evidenziazione testo
 	Text indent at:	Rientro testo a:
@@ -911,7 +918,7 @@
 	WordCraft	WordCraft
 	Words	Parole
 	Words only	Solo parole
-	Wrap Text	Testo a capo
+	Wrap Text	Disponi testo
 	Wrap\nText	Disponi\ntesto
 	Write & Insert Fields	Composizione e inserimento campi
 	Write a reply	Scrivi una risposta
@@ -1073,7 +1080,7 @@
 	If…Then…Else	Se…Allora…Altrimenti
 	Merge Record #	Record n.
 	Skip Record If…	Ignora record se…
-	Skip Record If	Salta record se
+	Skip Record If	Ignora record se
 	Equals:	Uguale a:
 	Then insert:	Allora inserisci:
 	Otherwise insert:	Altrimenti inserisci:
@@ -1090,7 +1097,7 @@
 	Leave a recipient out of the merge when a field has this value.	Escludi un destinatario dall'unione quando un campo ha questo valore.
 	Insert one text or another, depending on a field's value.	Inserisci un testo o un altro, in base al valore di un campo.
 	Select recipients first to match their fields.	Seleziona prima i destinatari per associarne i campi.
-	The recipient-list field that fills each part of an address block and greeting line.	Il campo dell'elenco destinatari che compila ogni parte del blocco indirizzo e della riga di saluto.
+	The recipient-list field that fills each part of an address block and greeting line.	Il campo dell'elenco destinatari che compila ogni parte del blocco di indirizzi e della formula di apertura.
 	No errors found: every merge field is in the recipient list.	Nessun errore trovato: tutti i campi unione sono nell'elenco destinatari.
 	These merge fields aren't in the recipient list:	Questi campi unione non sono nell'elenco destinatari:
 	Add at least one field.	Aggiungi almeno un campo.
@@ -1144,9 +1151,9 @@
 	Preview	Anteprima
 	getartcraft.com/apps/wordcraft	getartcraft.com/apps/wordcraft
 	Draw Ink	Disegna a penna
-	Erase Ink	Cancella penna
-	Hide Ink	Nascondi penna
-	Hide\nInk	Nascondi\npenna
+	Erase Ink	Cancella input penna
+	Hide Ink	Nascondi input penna
+	Hide\nInk	Nascondi\ninput penna
 	Pens	Penne
 	Thickness	Spessore
 	(All)	(Tutti)
@@ -1168,8 +1175,8 @@
 	Double Closing Quote	Virgolette doppie di chiusura
 	Double Opening Quote	Virgolette doppie di apertura
 	Ellipsis	Puntini di sospensione
-	Em Dash	Lineetta em
-	En Dash	Lineetta en
+	Em Dash	Trattino lungo
+	En Dash	Trattino medio
 	Em Space	Spazio em
 	En Space	Spazio en
 	Equal column width	Colonne di uguale larghezza
@@ -1195,7 +1202,7 @@
 	Preserve formatting during updates	Mantieni la formattazione negli aggiornamenti
 	Presets	Predefiniti
 	Recently used symbols:	Simboli usati di recente:
-	Registered	Registrato
+	Registered	Marchio registrato
 	Section Mark	Segno di sezione
 	Sequence name:	Nome sequenza:
 	Shortcut key:	Tasto di scelta rapida:
@@ -1307,7 +1314,7 @@
 	Version	Versione
 	% of all commits	% di tutti i commit
 	Lines +/−	Righe +/−
-	Craft	Artigianale
+	Craft	Craft
 	Studio	Studio
 	Atelier	Atelier
 	Darkroom	Camera oscura
@@ -1420,7 +1427,7 @@
 	Behind Text	Dietro al testo
 	Both Sides	Entrambi i lati
 	Choose a command	Scegli un comando
-	Choose a shortcut	Scegli una scelta rapida
+	Choose a shortcut	Scegli una combinazione di tasti
 	Commands:	Comandi:
 	Customize	Personalizza
 	Customize Keyboard	Personalizza tastiera
@@ -1452,6 +1459,8 @@
 	Remove every custom shortcut and restore the built-in keys?	Rimuovere tutte le scelte rapide personalizzate e ripristinare i tasti predefiniti?
 	Remove every custom tab and group and show all tabs again?	Rimuovere tutte le schede e i gruppi personalizzati e mostrare di nuovo tutte le schede?
 	Remove from Quick Access Toolbar	Rimuovi dalla barra di accesso rapido
+	Hide Quick Access Toolbar	Nascondi barra di accesso rapido
+	Show Quick Access Toolbar	Mostra barra di accesso rapido
 	Rename…	Rinomina…
 	Reset All…	Reimposta tutto…
 	Reset…	Reimposta…
@@ -1464,7 +1473,7 @@
 	Toggle Unicode Character	Attiva/disattiva carattere Unicode
 	Type Character Code	Digita codice carattere
 	Top and Bottom	Sopra e sotto
-	Wrap Text Sides	Lati del testo a capo
+	Wrap Text Sides	Lati disposizione testo
 	Arrows	Frecce
 	Base text:	Testo di base:
 	Choose the sheet that holds the recipients.	Scegli il foglio che contiene i destinatari.
@@ -1593,6 +1602,8 @@
 	Math AutoCorrect	Correzione automatica formule
 	More >>	Altro >>
 	Moves	Spostamenti
+	Moved from:	Spostato da:
+	Moved to:	Spostato in:
 	New document	Nuovo documento
 	No changes (read only)	Nessuna modifica (sola lettura)
 	Only allow this kind of editing:	Consenti solo questo tipo di modifica:
@@ -1709,7 +1720,7 @@
 	Scale Drawing	Ridimensiona disegno
 	Canvas Member	Elemento dell'area di disegno
 	Templates	Modelli
-	Templates and Add-ins	Modelli e aggiunte
+	Templates and Add-ins	Modelli e componenti aggiuntivi
 	Attach Template	Collega modello
 	Detach Template	Scollega modello
 	Automatically Update Document Styles	Aggiorna automaticamente gli stili del documento
@@ -2025,7 +2036,7 @@
 	Light with Outline	Chiaro con contorno
 	Hollow	Vuoto
 	Accent Gradient	Sfumatura colore
-	Dark with Shadow	Scuro con ombra
+	Dark with Shadow	Scuro con ombreggiatura
 	Soft Glow	Bagliore tenue
 	Accent with Reflection	Colore con riflesso
 	Warm Gradient with Outline	Sfumatura calda con contorno
@@ -2061,6 +2072,7 @@
 	Hyphenation zone:	Area di sillabazione:
 	Italian	Italiano
 	Croatian	Croato
+	Indonesian	Indonesiano
 	Japanese	Giapponese
 	Korean	Coreano
 	Limit consecutive hyphens to:	Limita trattini consecutivi a:
@@ -2353,6 +2365,7 @@
 	Scripts	Indici
 	Secant Function	Funzione secante
 	Showing the first {count} items.	Sono mostrati i primi {count} elementi.
+	No items to show.	Nessun elemento da mostrare.
 	Sine Function	Funzione seno
 	Sine theta	Seno di theta
 	Single Brackets	Parentesi singole
@@ -2375,7 +2388,7 @@
 	Stack Object (Three)	Oggetto pila (tre)
 	Stacked Fraction	Frazione in colonna
 	Stacked, no bar	In colonna, senza linea
-	Strong	Forte
+	Strong	Grassetto
 	Subscript-Superscript	Pedice-apice
 	Subscripts and Superscripts	Pedici e apici
 	Subtitle	Sottotitolo
@@ -2493,6 +2506,10 @@ preview	Title	Esempio
 	Contains	Contiene
 	Does not contain	Non contiene
 	{count} of {total} recipients will be merged.	Destinatari da unire: {count} su {total}.
+	Find in list:	Trova nell'elenco:
+	Any field	Qualsiasi campo
+	Matches: {count}	Corrispondenze: {count}
+	Show only records that will be merged	Mostra solo i record che verranno uniti
 	Show KeyTips (Alt or F10)	Mostra i suggerimenti tasti (Alt o F10)
 	Reading	Lettura
 	Reading Column Width	Larghezza colonna di lettura
@@ -2641,3 +2658,53 @@ preview	Title	Esempio
 # Reading Mode column widths (#1040)
 	Narrow	Stretta
 	Medium	Media
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Unisci le celle prima di dividere
+	Table size	Dimensioni tabella
+	AutoFit behavior	Adattamento automatico
+	Initial column width:	Larghezza colonna iniziale:
+	AutoFit to contents	Adatta al contenuto
+	AutoFit to window	Adatta alla finestra
+	Separate text at	Separa il testo in corrispondenza di
+	Commas	Virgole
+	Other:	Altro:
+	The number must be between 1 and {max}.	Il numero deve essere compreso tra 1 e {max}.
+	The measurement must be between {min} and {max}.	La misura deve essere compresa tra {min} e {max}.
+	Recently Used Fonts	Caratteri usati di recente
+	All Fonts	Tutti i caratteri
+	Spike	Raccoglitore
+	Insert Spike	Inserisci raccoglitore
+# Add Font status (#1789)
+	Added 1 font	1 tipo di carattere aggiunto
+	Added {n} fonts	{n} tipi di carattere aggiunti
+	{added}; {count} couldn't be read: {names}	{added}; {count} non leggibili: {names}
+	{names} and {n} more	{names} e altri {n}
+	{added}; {n} skipped (limit {max})	{added}; {n} saltati (limite {max})
+	nothing is selected	nessuna selezione
+	select a picture or shape first	seleziona prima un'immagine o una forma
+	select recipients first	seleziona prima i destinatari
+	select two or more pictures or shapes first (Shift+click)	seleziona due o più immagini o forme (Maiusc+clic)
+	text boxes can't go inside a text box	le caselle di testo non possono stare in una casella di testo
+	the cursor isn't in a table	il cursore non è in una tabella
+	{name} options	Opzioni di {name}
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	Nel testo
+	In margin	Nel margine
+	Drop Cap Options…	Opzioni capolettera…
+	Lines to drop:	Altezza in righe:
+	Distance from text:	Distanza dal testo:
+	Distance from text	Distanza dal testo
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	il paragrafo è vuoto
+	the paragraph starts with a space	il paragrafo inizia con uno spazio
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Blocca proporzioni
+	Relative to original picture size	Rispetto alle dimensioni originali dell'immagine
+	Original size	Dimensioni originali
+	{width} × {height} pixels	{width} × {height} pixel
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Scrivi una dimensione in qualsiasi unità, ad esempio 5 cm o 300 px. L'altro lato si adegua, così l'immagine mantiene le proporzioni.
+
+	Import…	Importa…

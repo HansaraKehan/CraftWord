@@ -504,3 +504,67 @@ fn widow_control_moves_a_three_line_paragraph_whole() {
     }
     assert!(split4, "the sweep never took the paragraph across a page break");
 }
+
+#[test]
+fn footer_border_limits_body() {
+    use wordcraft_doc::props::{Border, Borders, HeightRule};
+    let mut d = Document::from_text(&"Body line\n".repeat(40));
+    d.last_section.page_h = 400.0;
+    d.last_section.margin_bottom = 36.0;
+    d.last_section.footer = 16.0;
+    let mut table = wordcraft_doc::Table::new(1, 1, d.last_section.text_width());
+    table.rows[0].props.height = Some(160.0);
+    table.rows[0].props.height_rule = HeightRule::Exact;
+    table.props.borders = Some(Borders::all(Border::single(4.0)));
+    let id = d.add_part(PartKind::Footer, vec![Arc::new(Block::Table(table))]);
+    d.last_section.footers.default = Some(id);
+    for page in &lay(&d).pages {
+        let top = page
+            .footer
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Rule { y0, y1, border, .. } if (y0 - y1).abs() < 0.01 => Some(y0 - border.width / 2.0),
+                _ => None,
+            })
+            .fold(f32::MAX, f32::min);
+        assert!(page.body.bottom() <= top + 0.01, "body {}, footer stroke {top}", page.body.bottom());
+    }
+}
+
+/// A section numbering its pages in lower-case roman shows them so in its footer when the body
+/// shows the page count (`NUMPAGES`): the footer laid out while paginating, before the section's
+/// number format is known, isn't taken for the page's own footer.
+#[test]
+fn a_roman_page_number_in_the_footer_stays_roman_with_the_page_count_in_the_body() {
+    let field = |instr: &str| InlineObject::Field {
+        instr: instr.into(),
+        result: String::new(),
+        locked: false,
+        dirty: false,
+        code: false,
+        form: String::new(),
+    };
+    let mut d = Document::new();
+    let mut fp = Paragraph::new();
+    fp.insert_object(0, field("PAGE"), &Default::default()).unwrap();
+    let id = d.add_part(PartKind::Footer, vec![para_block(fp)]);
+    d.last_section.footers.default = Some(id);
+    let mut np = Paragraph::with_text(" pages", Default::default());
+    np.insert_object(0, field("NUMPAGES"), &Default::default()).unwrap();
+    d.body = vec![para_block(np)];
+    d.body.extend(paras(&"word ".repeat(40), 40));
+    let mut end = Paragraph::with_text("end", Default::default());
+    end.section = Some(Box::new(d.last_section.clone()));
+    d.body.push(para_block(end));
+    d.body.extend(paras(&"word ".repeat(40), 120));
+    d.last_section.page_num_start = Some(1);
+    d.last_section.page_num_format = wordcraft_doc::section::NumFormat::LowerRoman;
+    let l = lay(&d);
+    let roman: Vec<_> = l.pages.iter().filter(|p| p.section == 1).collect();
+    assert!(roman.len() > 5);
+    for p in roman {
+        let glyphs: usize = p.footer.iter().map(|it| if let Placed::Lines { para, .. } = it { para.glyphs.len() } else { 0 }).sum();
+        let want = wordcraft_doc::section::NumFormat::LowerRoman.format(p.number);
+        assert_eq!(glyphs, want.chars().count(), "page {}: the footer should show {want}", p.number);
+    }
+}

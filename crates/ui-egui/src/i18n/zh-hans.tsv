@@ -225,6 +225,7 @@
 	Use the Insert key to switch overtype on and off	用 Insert 键切换改写模式
 	Whole document	整篇文档
 	This section	本节
+	Selected text	所选文字
 	Fill	填充
 	Setting:	设置：
 	3-D	三维
@@ -579,6 +580,10 @@
 	Modify…	修改…
 	Move or Resize	移动或调整大小
 	Multilevel List	多级列表
+	Multilevel List Library	多级列表库
+	Article I.	第 I 条
+	Chapter 1	第 1 章
+	Section 1.01	第 1.01 节
 	Multiple Pages	多页
 	Name (A–Z)	名称（A–Z）
 	Name:	名称：
@@ -842,6 +847,8 @@
 	Space before/after:	段前/段后间距：
 	Spacing	间距
 	Spacing (pt):	间距（磅）：
+	Kerning for fonts:	为字体调整字间距：
+	Points and above	磅或更大
 	Speech	语音
 	Spelling & Grammar	拼写和语法
 	Spelling &\nGrammar	拼写和语法
@@ -1495,6 +1502,8 @@
 	Math AutoCorrect	数学符号自动更正
 	More >>	更多 >>
 	Moves	移动
+	Moved from:	移动自:
+	Moved to:	移动到:
 	New document	新文档
 	No changes (read only)	不允许任何更改(只读)
 	Only allow this kind of editing:	仅允许此类编辑:
@@ -1554,6 +1563,8 @@
 	Customize Ribbon	自定义功能区
 	Add to Quick Access Toolbar	添加到快速访问工具栏
 	Remove from Quick Access Toolbar	从快速访问工具栏删除
+	Hide Quick Access Toolbar	隐藏快速访问工具栏
+	Show Quick Access Toolbar	显示快速访问工具栏
 	Customize the Ribbon…	自定义功能区…
 	Customize Quick Access Toolbar…	自定义快速访问工具栏…
 	More Commands…	其他命令…
@@ -2057,6 +2068,7 @@
 	Hyphenation zone:	断字区：
 	Italian	意大利语
 	Croatian	克罗地亚语
+	Indonesian	印度尼西亚语
 	Japanese	日语
 	Korean	韩语
 	Limit consecutive hyphens to:	连续断字数限制：
@@ -2140,6 +2152,10 @@
 	Contains	包含
 	Does not contain	不包含
 	{count} of {total} recipients will be merged.	将合并 {total} 位收件人中的 {count} 位。
+	Find in list:	在列表中查找：
+	Any field	任意字段
+	Matches: {count}	匹配项：{count}
+	Show only records that will be merged	仅显示将要合并的记录
 	Take the last match on the page	取本页最后一个匹配项
 	Show its list number	显示其列表编号
 	Show its number relative to this field	显示相对于此域的编号
@@ -2245,3 +2261,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	窄
 	Medium	中等
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	拆分前合并单元格
+	Table size	表格尺寸
+	AutoFit behavior	自动调整操作
+	Initial column width:	初始列宽：
+	AutoFit to contents	根据内容调整表格
+	AutoFit to window	根据窗口调整表格
+	Separate text at	文字分隔位置
+	Commas	逗号
+	Other:	其他字符：
+	The number must be between 1 and {max}.	数字必须介于 1 和 {max} 之间。
+	The measurement must be between {min} and {max}.	度量值必须介于 {min} 和 {max} 之间。
+	Recently Used Fonts	最近使用的字体
+	All Fonts	所有字体
+	Spike	图文场
+	Insert Spike	插入图文场
+# Add Font status (#1789)
+	Added 1 font	已添加 1 个字体
+	Added {n} fonts	已添加 {n} 个字体
+	{added}; {count} couldn't be read: {names}	{added}；{count} 个无法读取：{names}
+	{names} and {n} more	{names} 等另外 {n} 个
+	{added}; {n} skipped (limit {max})	{added}；已跳过 {n} 个（上限 {max}）
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	下沉
+	In margin	悬挂
+	Drop Cap Options…	首字下沉选项…
+	Lines to drop:	下沉行数：
+	Distance from text:	距正文：
+	Distance from text	距正文
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	锁定纵横比
+	Relative to original picture size	相对于原始图片大小
+	Original size	原始大小
+	{width} × {height} pixels	{width} × {height} 像素
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	可用任意单位输入大小，例如 5 cm 或 300 px。另一边随之调整，图片保持原有比例。
+
+	Import…	导入…

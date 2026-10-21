@@ -14,9 +14,9 @@ pub const APP_INK: Color32 = Color32::from_rgb(0x2B, 0x47, 0xB5);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Appearance {
-    #[default]
     Light,
     Dark,
+    #[default]
     System,
 }
 
@@ -271,11 +271,28 @@ pub struct Tokens {
     /// Crop mode: the crop handles, and the dim over the cropped-away part of a picture.
     pub crop_handle: Color32,
     pub crop_dim: Color32,
+    /// Comment and revision balloons in the markup area beside the page (#2045): the card, the
+    /// area behind it and its edge. The card holds `text`, so it is dark in the dark theme.
+    pub balloon: Color32,
+    pub markup_area: Color32,
+    pub markup_edge: Color32,
+    /// "Resolved" on a balloon: `green` is only 4.2:1 on the light card.
+    pub resolved_text: Color32,
+    /// One stripe and leader colour per comment author, in turn.
+    pub author_colors: [Color32; 5],
+    /// The same colours for the leader line across the page: the paper stays white in the dark
+    /// theme, so these are the light-theme colours in both.
+    pub leader_colors: [Color32; 5],
     pub menu: Color32,
     pub blue: Color32,
     pub red: Color32,
     pub green: Color32,
     pub orange: Color32,
+    /// A window's close box while the pointer is over it (the red of a Windows caption button),
+    /// while pressed, and the ✕ drawn on it then (#1885).
+    pub close_hover: Color32,
+    pub close_pressed: Color32,
+    pub on_close: Color32,
 }
 
 impl Tokens {
@@ -314,11 +331,32 @@ impl Tokens {
             guide: Color32::from_rgb(0xC0, 0x28, 0x8C),
             crop_handle: Color32::BLACK,
             crop_dim: Color32::from_rgba_unmultiplied(0x30, 0x30, 0x30, 0xE0),
+            balloon: Color32::WHITE,
+            markup_area: Color32::from_rgb(0xF3, 0xF3, 0xF3),
+            markup_edge: Color32::from_rgb(0xE0, 0xE0, 0xE0),
+            resolved_text: Color32::from_rgb(0x1B, 0x6B, 0x42),
+            author_colors: [
+                Color32::from_rgb(0x2F, 0x6F, 0xD0),
+                Color32::from_rgb(0xB0, 0x3A, 0x2E),
+                Color32::from_rgb(0x2E, 0x7D, 0x32),
+                Color32::from_rgb(0x8E, 0x44, 0xAD),
+                Color32::from_rgb(0xE0, 0x7B, 0x1F),
+            ],
+            leader_colors: [
+                Color32::from_rgb(0x2F, 0x6F, 0xD0),
+                Color32::from_rgb(0xB0, 0x3A, 0x2E),
+                Color32::from_rgb(0x2E, 0x7D, 0x32),
+                Color32::from_rgb(0x8E, 0x44, 0xAD),
+                Color32::from_rgb(0xE0, 0x7B, 0x1F),
+            ],
             menu: Color32::WHITE,
             blue: Color32::from_rgb(0x2F, 0x6F, 0xD0),
             red: Color32::from_rgb(0xD1, 0x3B, 0x3B),
             green: Color32::from_rgb(0x2E, 0x8B, 0x57),
             orange: Color32::from_rgb(0xE0, 0x7B, 0x1F),
+            close_hover: Color32::from_rgb(0xC4, 0x2B, 0x1C),
+            close_pressed: Color32::from_rgb(0xA6, 0x23, 0x16),
+            on_close: Color32::WHITE,
         }
     }
     pub fn dark() -> Self {
@@ -358,11 +396,33 @@ impl Tokens {
             guide: Color32::from_rgb(0xE0, 0x4C, 0xB0),
             crop_handle: Color32::BLACK,
             crop_dim: Color32::from_rgba_unmultiplied(0x30, 0x30, 0x30, 0xE0),
+            balloon: Color32::from_rgb(0x2B, 0x2B, 0x2B),
+            markup_area: Color32::from_rgb(0x1B, 0x1B, 0x1B),
+            markup_edge: Color32::from_rgb(0x3A, 0x3A, 0x3A),
+            resolved_text: Color32::from_rgb(0x5B, 0xC0, 0x8A),
+            author_colors: [
+                Color32::from_rgb(0x7F, 0xA8, 0xF2),
+                Color32::from_rgb(0xE5, 0x78, 0x6B),
+                Color32::from_rgb(0x6F, 0xBF, 0x73),
+                Color32::from_rgb(0xC0, 0x8F, 0xE0),
+                Color32::from_rgb(0xF0, 0xA0, 0x50),
+            ],
+            leader_colors: [
+                Color32::from_rgb(0x2F, 0x6F, 0xD0),
+                Color32::from_rgb(0xB0, 0x3A, 0x2E),
+                Color32::from_rgb(0x2E, 0x7D, 0x32),
+                Color32::from_rgb(0x8E, 0x44, 0xAD),
+                Color32::from_rgb(0xE0, 0x7B, 0x1F),
+            ],
             menu: Color32::from_rgb(0x2B, 0x2B, 0x2B),
             blue: Color32::from_rgb(0x6C, 0x9B, 0xEA),
             red: Color32::from_rgb(0xEE, 0x6A, 0x6A),
             green: Color32::from_rgb(0x5B, 0xC0, 0x8A),
             orange: Color32::from_rgb(0xF0, 0xA0, 0x50),
+            // A little lighter than the light theme's red, so it reads against the dark window.
+            close_hover: Color32::from_rgb(0xD6, 0x3C, 0x2C),
+            close_pressed: Color32::from_rgb(0xB3, 0x30, 0x23),
+            on_close: Color32::WHITE,
         }
     }
     pub fn get(ctx: &egui::Context) -> Tokens {
@@ -732,6 +792,17 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
+    /// #1885: the ✕ on a window's close box reads on its hover and pressed reds in both themes.
+    #[test]
+    fn close_box_glyph_reads_on_its_reds() {
+        for t in [super::Tokens::light(), super::Tokens::dark()] {
+            for (name, bg) in [("close_hover", t.close_hover), ("close_pressed", t.close_pressed)] {
+                let r = contrast(t.on_close, bg);
+                assert!(r >= 4.5, "dark={}: on_close on {name} is {r:.2}:1", t.dark);
+            }
+        }
+    }
+
     /// #655: text and knobs on filled accent controls (Share, avatar, AutoSave, keytips) reach 4.5:1
     /// on the accent and on its hover shade, in both themes.
     #[test]
@@ -764,6 +835,37 @@ mod tests {
             assert!(lum(t.ruler) > lum(t.ruler_margin), "dark={}: ruler text area is darker than its margins", t.dark);
             let r = contrast(t.ruler_tick, t.ruler);
             assert!(r >= 4.5, "dark={}: ruler numbers on the text area are {r:.2}:1", t.dark);
+        }
+    }
+
+    /// #2045: comment and revision balloons were drawn on a hard-coded white card, so the light
+    /// text of the dark theme was near-invisible. Every text colour a balloon uses reaches 4.5:1
+    /// on the card, and the author stripes and borders 3:1 on the card and the markup area.
+    #[test]
+    fn comment_balloons_are_readable() {
+        for t in [super::Tokens::light(), super::Tokens::dark()] {
+            for (name, card) in [("card", t.balloon), ("selected card", t.checked)] {
+                for (what, fg) in [("text", t.text), ("dim text", t.text_dim), ("resolved label", t.resolved_text)] {
+                    let r = contrast(fg, card);
+                    assert!(r >= 4.5, "dark={}: {what} on the {name} is {r:.2}:1", t.dark);
+                }
+            }
+            // The light stripes are unchanged; only the dark theme's were unreadable.
+            for (i, c) in t.author_colors.iter().enumerate().filter(|_| t.dark) {
+                for (name, bg) in [("card", t.balloon), ("selected card", t.checked), ("markup area", t.markup_area)] {
+                    let r = contrast(*c, bg);
+                    assert!(r >= 3.0, "dark={}: author colour {i} on the {name} is {r:.2}:1", t.dark);
+                }
+            }
+            // The leader's on-page part is drawn at 70% on white paper in both themes, no fainter than before (#2045).
+            for (i, c) in t.leader_colors.iter().enumerate() {
+                let on_paper = |a: u8| u8::try_from((u16::from(a) * 7 + 255 * 3) / 10).unwrap_or(255);
+                let blended = egui::Color32::from_rgb(on_paper(c.r()), on_paper(c.g()), on_paper(c.b()));
+                let r = contrast(blended, egui::Color32::WHITE);
+                assert!(r >= 2.1, "dark={}: leader colour {i} on the page is {r:.2}:1", t.dark);
+            }
+            let r = contrast(t.markup_edge, t.markup_area);
+            assert!(r >= 1.1, "dark={}: the markup area edge is invisible ({r:.2}:1)", t.dark);
         }
     }
 

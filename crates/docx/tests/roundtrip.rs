@@ -56,6 +56,8 @@ fn every_char_prop_round_trips() {
     let all = CharProps {
         style: Some("Strong".into()),
         font: Some("Georgia".into()),
+        // The symbol's own font: the run is written as `w:sym` characters (#2036).
+        sym_font: Some("Wingdings".into()),
         size: Some(10.5),
         bold: Some(true),
         italic: Some(false),
@@ -75,6 +77,7 @@ fn every_char_prop_round_trips() {
         scale: Some(150.0),
         position: Some(3.0),
         kern: Some(8.0),
+        ligatures: Some(wordcraft_doc::props::Ligatures { standard: true, historical: true, ..Default::default() }),
         outline: Some(true),
         shadow: Some(true),
         emboss: Some(false),
@@ -110,6 +113,13 @@ fn every_char_prop_round_trips() {
         bold_cs: Some(false),
         italic_cs: Some(true),
         lang_bidi: Some("fa-IR".into()),
+        east_asian_layout: Some(wordcraft_doc::props::EastAsianLayout {
+            id: Some(3),
+            combine: Some(true),
+            combine_brackets: Some(wordcraft_doc::props::CombineBrackets::Square),
+            vert: Some(false),
+            vert_compress: Some(true),
+        }),
         link: None,
         ins: None,
         del: None,
@@ -165,6 +175,9 @@ fn every_para_prop_round_trips() {
         suppress_line_numbers: Some(true),
         bidi: Some(false),
         drop_cap: None,
+        drop_cap_margin: None,
+        drop_cap_distance: None,
+        drop_cap_font: None,
         frame: Some(wordcraft_doc::props::TextFrame {
             w: Some(144.0),
             h: Some(36.0),
@@ -705,6 +718,32 @@ fn note_never_references_itself() {
     let got = paras(&r)[0];
     let Some(InlineObject::NoteRef { id, .. }) = got.objects.first() else { panic!("{:?}", got.objects) };
     assert_eq!(part_text(&r, Some(*id)).trim(), "The note.");
+}
+
+/// A note with a custom mark keeps it in the note's own text: a plain run with the mark, not the
+/// `w:footnoteRef` / `w:endnoteRef` placeholder that Word replaces by the automatic number.
+#[test]
+fn custom_note_mark_stays_in_the_note() {
+    let mut d = Document::new();
+    let f = d.add_part(PartKind::Footnote, Vec::new());
+    let e = d.add_part(PartKind::Endnote, Vec::new());
+    for (id, kind) in [(f, NoteKind::Footnote), (e, NoteKind::Endnote)] {
+        let mut note = Paragraph::with_text(" The note.", CharProps::default());
+        note.insert_object(0, InlineObject::NoteRef { kind, id, custom: "*".into() }, &CharProps::default()).unwrap();
+        d.parts.get_mut(&id).unwrap().blocks = vec![para_block(note)];
+    }
+    let mut p = Paragraph::with_text("Text", CharProps::default());
+    p.insert_object(4, InlineObject::NoteRef { kind: NoteKind::Footnote, id: f, custom: "*".into() }, &CharProps::default()).unwrap();
+    let end = p.len();
+    p.insert_object(end, InlineObject::NoteRef { kind: NoteKind::Endnote, id: e, custom: "*".into() }, &CharProps::default()).unwrap();
+    d.body = vec![para_block(p)];
+
+    let bytes = wordcraft_docx::write(&d).expect("write");
+    for (file, mark) in [("word/footnotes.xml", "<w:footnoteRef/>"), ("word/endnotes.xml", "<w:endnoteRef/>")] {
+        let xml = part_xml(&bytes, file);
+        assert!(!xml.contains(mark), "{file}: the custom mark became an automatic number: {xml}");
+        assert!(xml.contains(r#"<w:t xml:space="preserve">*</w:t>"#), "{file}: {xml}");
+    }
 }
 
 /// A note read from a Word file starts with its own number (a reference to itself, from the
@@ -2605,4 +2644,43 @@ fn page_background_picture_round_trips() {
     assert_eq!(r.settings.page_color, d.settings.page_color);
     // Saved again, it is still there.
     assert!(rt(&r).settings.page_picture.is_some());
+}
+
+/// #2601: Drop Cap Options — a dropped cap with its lines, distance from the text and font, and
+/// one in the margin, survive a save: `w:framePr w:dropCap="drop|margin" w:lines w:hSpace` on the
+/// letter's own paragraph, the font on the letter's run (ECMA-376 §17.3.1.11). The text after the
+/// letter keeps its own font.
+#[test]
+fn drop_cap_options_round_trip() {
+    let body = CharProps { font: Some("Liberation Serif".into()), ..Default::default() };
+    let mut dropped = Paragraph::with_text("Once upon a time", body.clone());
+    dropped.props.drop_cap = Some(2);
+    dropped.props.drop_cap_distance = Some(6.0);
+    dropped.props.drop_cap_font = Some("Liberation Mono".into());
+    let mut margin = Paragraph::with_text("In the margin", body.clone());
+    margin.props.drop_cap = Some(4);
+    margin.props.drop_cap_margin = Some(true);
+    let d = doc_with(vec![dropped, margin]);
+    let bytes = wordcraft_docx::write(&d).expect("write");
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut z.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+    assert!(xml.contains(r#"w:dropCap="drop" w:lines="2" w:hSpace="120""#), "{xml}");
+    assert!(xml.contains(r#"w:dropCap="margin" w:lines="4""#), "{xml}");
+    assert!(xml.contains(r#"w:ascii="Liberation Mono""#), "the letter's font on its run: {xml}");
+    let r = wordcraft_docx::read(&bytes).expect("read");
+    let got = paras(&r);
+    assert_eq!(got.len(), 2, "each letter merges back into its paragraph");
+    let (a, b) = (&got[0], &got[1]);
+    assert_eq!(a.plain_text(), "Once upon a time");
+    assert_eq!(
+        (a.props.drop_cap, a.props.drop_cap_margin, a.props.drop_cap_distance, a.props.drop_cap_font.as_deref()),
+        (Some(2), None, Some(6.0), Some("Liberation Mono"))
+    );
+    assert!(a.runs.iter().all(|r| r.props.font.as_deref() == Some("Liberation Serif")), "the letter keeps the text's font: {:?}", a.runs);
+    assert_eq!(b.plain_text(), "In the margin");
+    assert_eq!(
+        (b.props.drop_cap, b.props.drop_cap_margin, b.props.drop_cap_distance, b.props.drop_cap_font.as_deref()),
+        (Some(4), Some(true), None, None)
+    );
 }

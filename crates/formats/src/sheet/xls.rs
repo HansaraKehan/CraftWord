@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
 
 use super::{
-    DateKind, Grid, MAX_CELL_CHARS, MAX_CELLS, MAX_COLS, MAX_ENTRY, MAX_SHARED, MAX_SHEETS, MAX_XFS, builtin_date, custom_date, number, serial_date,
+    DateKind, Grid, MAX_CELL_CHARS, MAX_CELLS, MAX_COLS, MAX_ENTRY, MAX_ROWS, MAX_SHARED, MAX_SHEETS, MAX_XFS, TextBudget, builtin_date, custom_date,
+    number, serial_date,
 };
 
 /// The compound-file signature every `.xls` (and `.doc`) starts with.
@@ -37,6 +38,9 @@ const MULRK: u16 = 0x00BD;
 const BOOLERR: u16 = 0x0205;
 const FORMULA: u16 = 0x0006;
 const STRING: u16 = 0x0207;
+const SHRFMLA: u16 = 0x04BC;
+const ARRAY: u16 = 0x0221;
+const TABLE: u16 = 0x0236;
 
 /// Whether `bytes` is a compound file holding an Excel workbook stream.
 pub fn is_xls(bytes: &[u8]) -> bool {
@@ -300,15 +304,18 @@ fn sheet_rows(stream: &[u8], offset: usize, g: &Globals) -> Result<Vec<Vec<Strin
         Some(kind) => serial_date(x, g.date1904, kind).unwrap_or_else(|| number(x)),
         None => number(x),
     };
-    let mut put = |row: u16, col: u16, v: String, count: &mut usize| {
-        if usize::from(col) >= MAX_COLS || *count >= MAX_CELLS || v.is_empty() {
-            return;
-        }
-        if cells.entry(row).or_default().insert(col, v).is_none() {
+    let mut budget = TextBudget::default();
+    // Whether a cell of `len` bytes at (row, col) fits under the caps; spends its text budget.
+    let mut fits = |cells: &BTreeMap<u16, BTreeMap<u16, String>>, row: u16, col: u16, len: usize, count: usize| {
+        usize::from(col) < MAX_COLS && count < MAX_CELLS && len > 0 && (cells.contains_key(&row) || cells.len() < MAX_ROWS) && budget.take(len)
+    };
+    let mut put = |cells: &mut BTreeMap<u16, BTreeMap<u16, String>>, row: u16, col: u16, v: &str, count: &mut usize| {
+        if fits(cells, row, col, v.len(), *count) && cells.entry(row).or_default().insert(col, v.to_string()).is_none() {
             *count += 1;
         }
     };
-    // A FORMULA with a string result waits for the STRING record after it.
+    // A FORMULA with a string result waits for the STRING record after it (only shared-formula,
+    // array and table records may come between).
     let mut pending: Option<(u16, u16)> = None;
     while let Some((kind, d, next)) = record(stream, pos) {
         pos = next;
@@ -317,30 +324,34 @@ fn sheet_rows(stream: &[u8], offset: usize, g: &Globals) -> Result<Vec<Vec<Strin
         }
         if kind == STRING {
             if let (Some((r, c)), Some(s)) = (pending.take(), unicode_string(d, 0)) {
-                put(r, c, s, &mut count);
+                put(&mut cells, r, c, &s, &mut count);
             }
             continue;
+        }
+        if !matches!(kind, SHRFMLA | ARRAY | TABLE) {
+            pending = None;
         }
         let (Some(row), Some(col), Some(xf)) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4)) else { continue };
         match kind {
             LABELSST => {
+                // Borrowed until it fits: a shared string may be used by millions of cells.
                 if let Some(s) = u32_at(d, 6).and_then(|i| g.sst.get(i as usize)) {
-                    put(row, col, s.clone(), &mut count);
+                    put(&mut cells, row, col, s, &mut count);
                 }
             }
             LABEL | RSTRING => {
                 if let Some(s) = unicode_string(d, 6) {
-                    put(row, col, s, &mut count);
+                    put(&mut cells, row, col, &s, &mut count);
                 }
             }
             NUMBER => {
                 if let Some(x) = f64_at(d, 6) {
-                    put(row, col, num(x, xf), &mut count);
+                    put(&mut cells, row, col, &num(x, xf), &mut count);
                 }
             }
             RK => {
                 if let Some(v) = u32_at(d, 6) {
-                    put(row, col, num(rk(v), xf), &mut count);
+                    put(&mut cells, row, col, &num(rk(v), xf), &mut count);
                 }
             }
             MULRK => {
@@ -349,7 +360,7 @@ fn sheet_rows(stream: &[u8], offset: usize, g: &Globals) -> Result<Vec<Vec<Strin
                 for k in 0..n {
                     let at = 4 + k * 6;
                     if let (Some(x), Some(v)) = (u16_at(d, at), u32_at(d, at + 2)) {
-                        put(row, col.saturating_add(k as u16), num(rk(v), x), &mut count);
+                        put(&mut cells, row, col.saturating_add(k as u16), &num(rk(v), x), &mut count);
                     }
                 }
             }
@@ -362,18 +373,18 @@ fn sheet_rows(stream: &[u8], offset: usize, g: &Globals) -> Result<Vec<Vec<Strin
                 } else {
                     "FALSE".into()
                 };
-                put(row, col, s, &mut count);
+                put(&mut cells, row, col, &s, &mut count);
             }
             FORMULA => {
                 if d.get(12..14) == Some(&[0xFF, 0xFF]) {
                     match d.get(6).copied() {
                         Some(0) => pending = Some((row, col)),
-                        Some(1) => put(row, col, if d.get(8).is_some_and(|b| *b != 0) { "TRUE".into() } else { "FALSE".into() }, &mut count),
-                        Some(2) => put(row, col, error_text(d.get(8).copied().unwrap_or(0x2A)).to_string(), &mut count),
+                        Some(1) => put(&mut cells, row, col, if d.get(8).is_some_and(|b| *b != 0) { "TRUE" } else { "FALSE" }, &mut count),
+                        Some(2) => put(&mut cells, row, col, error_text(d.get(8).copied().unwrap_or(0x2A)), &mut count),
                         _ => {}
                     }
                 } else if let Some(x) = f64_at(d, 6) {
-                    put(row, col, num(x, xf), &mut count);
+                    put(&mut cells, row, col, &num(x, xf), &mut count);
                 }
             }
             _ => {}
@@ -527,6 +538,61 @@ mod tests {
         let b: &[u8] = &[1, 0x2D, 0x4E, 0x87, 0x65];
         let mut p = Pieces::new(vec![a, b]);
         assert_eq!(p.rich_string().as_deref(), Some("AB中文"));
+    }
+
+    /// A worksheet stream from `(kind, data)` records, BOF first and EOF last.
+    fn sheet_stream(recs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut put = |kind: u16, d: &[u8]| {
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&(d.len() as u16).to_le_bytes());
+            out.extend_from_slice(d);
+        };
+        put(BOF, &[0x00, 0x06, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        for (k, d) in recs {
+            put(*k, d);
+        }
+        put(EOF, &[]);
+        out
+    }
+
+    fn cell(row: u16, col: u16, rest: &[u8]) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&row.to_le_bytes());
+        d.extend_from_slice(&col.to_le_bytes());
+        d.extend_from_slice(&0u16.to_le_bytes());
+        d.extend_from_slice(rest);
+        d
+    }
+
+    fn globals_with(sst: Vec<String>) -> Globals {
+        Globals { sheets: Vec::new(), sst, xfs: Vec::new(), date1904: false }
+    }
+
+    /// #1287: one long shared string used by thousands of cells stays under the text budget.
+    #[test]
+    fn shared_strings_cannot_blow_up_memory() {
+        let g = globals_with(vec!["x".repeat(MAX_CELL_CHARS)]);
+        let recs: Vec<_> = (0..4_000u16).map(|r| (LABELSST, cell(r, 0, &0u32.to_le_bytes()))).collect();
+        let rows = sheet_rows(&sheet_stream(&recs), 0, &g).unwrap();
+        let total: usize = rows.iter().flatten().map(String::len).sum();
+        assert!(total <= crate::sheet::MAX_TEXT_BYTES, "{total} bytes of cell text");
+        assert!(rows.len() > 1_000, "the budget still keeps a real list: {}", rows.len());
+    }
+
+    /// #1287: a FORMULA's string result goes only to the STRING record right after it.
+    #[test]
+    fn late_formula_string_does_not_land_in_the_formula_cell() {
+        let mut formula = vec![0u8, 0, 0, 0, 0, 0, 0xFF, 0xFF];
+        formula.extend_from_slice(&[0; 6]);
+        let string = vec![4u8, 0, 0, b'l', b'a', b't', b'e'];
+        let g = globals_with(Vec::new());
+        // Another cell record between them: the string is dropped.
+        let recs = vec![(FORMULA, cell(0, 0, &formula)), (NUMBER, cell(1, 0, &5f64.to_le_bytes())), (STRING, string.clone())];
+        assert_eq!(sheet_rows(&sheet_stream(&recs), 0, &g).unwrap(), rows(&[&["5"]]));
+        // A shared-formula record between them is allowed.
+        let recs = vec![(FORMULA, cell(0, 0, &formula)), (SHRFMLA, vec![0; 10]), (STRING, string)];
+        assert_eq!(sheet_rows(&sheet_stream(&recs), 0, &g).unwrap(), rows(&[&["late"]]));
     }
 
     #[test]

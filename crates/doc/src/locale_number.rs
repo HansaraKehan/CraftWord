@@ -111,10 +111,11 @@ pub fn format_number(v: f64, lang: Option<&str>) -> String {
     if !v.is_finite() {
         return "0".into();
     }
-    if v.fract() == 0.0 && v.abs() < 1e15 {
+    if v.fract() == 0.0 && v.abs() < 9.2e18 {
         return format!("{}", v as i64);
     }
     let s = format!("{v:.2}");
+    let s = if s == "-0.00" { "0.00".to_string() } else { s };
     if decimal_separator(lang) == ',' { s.replace('.', ",") } else { s }
 }
 
@@ -147,6 +148,7 @@ mod tests {
         assert_eq!(parse_number(".", pl), None);
         assert_eq!(format_number(5.75, pl), "5,75");
         assert_eq!(format_number(1350.0, pl), "1350");
+        assert_eq!(format_number(-0.001, pl), "0,00", "a rounded zero has no sign");
     }
 
     #[test]
@@ -161,6 +163,8 @@ mod tests {
         assert_eq!(parse_number("1.", en), Some(1.0));
         assert_eq!(parse_number("0,125", en), None, "never 125");
         assert_eq!(format_number(5.75, en), "5.75");
+        assert_eq!(format_number(-0.001, en), "0.00", "a rounded zero has no sign");
+        assert_eq!(format_number(-0.0, None), "0");
         assert_eq!(decimal_separator(Some("de-CH")), '.');
         assert_eq!(decimal_separator(Some("de-DE")), ',');
     }
@@ -173,5 +177,14 @@ mod tests {
             }
         }
         assert_eq!(format_number(f64::NAN, None), "0");
+    }
+
+    #[test]
+    fn large_whole_numbers_have_no_decimals() {
+        assert_eq!(format_number(1e15, None), "1000000000000000");
+        assert_eq!(format_number(2.5e15, None), "2500000000000000");
+        assert_eq!(format_number(-1e15, None), "-1000000000000000");
+        assert_eq!(format_number(9.0e18, None), "9000000000000000000");
+        assert_eq!(format_number(1e15 + 0.5, None), "1000000000000000.50");
     }
 }

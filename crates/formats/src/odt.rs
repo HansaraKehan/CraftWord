@@ -78,16 +78,31 @@ fn pt(v: f32) -> String {
     format!("{}pt", s.trim_end_matches('0').trim_end_matches('.'))
 }
 
+/// A section that starts a page: the master page it uses and where page numbering restarts.
+type SecStart = (String, Option<u32>);
+
 #[derive(Default)]
 struct Writer {
     /// Automatic text styles: properties XML → name.
     text_styles: Vec<(String, String)>,
-    /// Automatic paragraph styles: (parent, properties XML) → name.
-    para_styles: Vec<((String, String), String)>,
+    /// Automatic paragraph styles: (parent, properties XML, master page) → name.
+    para_styles: Vec<((String, String, String), String)>,
     /// List styles: level kinds.
     list_styles: Vec<[bool; 9]>,
     /// Table styles: (name, column widths).
     tables: Vec<Vec<f32>>,
+    /// The master page (and page-number restart) each table in `tables` starts.
+    table_starts: Vec<Option<SecStart>>,
+    /// Automatic styles of the columned `text:section`s written.
+    section_styles: Vec<String>,
+    /// The page a section starts, for the next top-level block.
+    pending_start: Option<SecStart>,
+    /// The next top-level list continues the one that ended the previous section.
+    continue_list: bool,
+    /// `xml:id` of the last top-level list written, for `text:continue-list`.
+    last_list: Option<String>,
+    /// The page the block being written starts.
+    master: Option<SecStart>,
     /// Cell styles by shading.
     cell_styles: Vec<Option<Rgb>>,
     pictures: Vec<(String, std::sync::Arc<Vec<u8>>, String)>,
@@ -169,6 +184,12 @@ impl Writer {
     }
 
     fn para_style(&mut self, p: &Para) -> String {
+        self.para_style_at(p, None)
+    }
+
+    /// The paragraph style of `p`; `start` makes it begin a page of that master page (ODF 1.3
+    /// §19.471 `style:master-page-name`), restarting page numbering where asked (§20.322).
+    fn para_style_at(&mut self, p: &Para, start: Option<&SecStart>) -> String {
         let parent = parent_style(p.kind).to_string();
         let mut props = String::new();
         match p.align {
@@ -178,16 +199,25 @@ impl Writer {
             Some(Align::Left) => props.push_str(" fo:text-align=\"start\""),
             None => {}
         }
-        if p.page_break {
+        // The master page starts the page itself: no page break besides.
+        if p.page_break && start.is_none() {
             props.push_str(" fo:break-before=\"page\"");
+        }
+        if let Some(n) = start.and_then(|(_, n)| *n) {
+            props.push_str(&format!(" style:page-number=\"{n}\""));
+        }
+
+        if p.keep_next {
+            props.push_str(" fo:keep-with-next=\"always\"");
         }
         if p.kind == Kind::Rule {
             props.push_str(" fo:border-bottom=\"0.75pt solid #a0a0a0\" fo:padding-bottom=\"1pt\"");
         }
-        if props.is_empty() {
+        let master = start.map(|(m, _)| m.clone()).unwrap_or_default();
+        if props.is_empty() && master.is_empty() {
             return parent;
         }
-        let key = (parent, props);
+        let key = (parent, props, master);
         if let Some((_, n)) = self.para_styles.iter().find(|(k, _)| *k == key) {
             return n.clone();
         }
@@ -318,7 +348,8 @@ impl Writer {
     fn plain_inlines(&mut self, inl: &[Inline], out: &mut String) {
         let mut prev_space = true;
         let inl = model::equations_as_text(inl);
-        for i in inl.iter() {
+        let last = inl.len().saturating_sub(1);
+        for (idx, i) in inl.iter().enumerate() {
             match i {
                 Inline::Text(t, f) => {
                     let mut body = String::new();
@@ -344,7 +375,12 @@ impl Writer {
                         flush(&mut body, &mut spaces, prev_space);
                         prev_space = false;
                         match c {
-                            '\t' => body.push_str("<text:tab/>"),
+                            '\t' => {
+                                // The reader collapses a literal space after a tab, so spaces
+                                // that follow are written as `<text:s/>`.
+                                body.push_str("<text:tab/>");
+                                prev_space = true;
+                            }
                             '\n' => {
                                 body.push_str("<text:line-break/>");
                                 prev_space = true;
@@ -354,7 +390,8 @@ impl Writer {
                         }
                     }
                     if spaces > 0 {
-                        flush(&mut body, &mut spaces, prev_space);
+                        // The reader drops a literal space at the end of a paragraph.
+                        flush(&mut body, &mut spaces, prev_space || idx == last);
                         prev_space = true;
                     }
                     // A script, `file:`, UNC or other non-web target is written as plain text, as
@@ -396,9 +433,10 @@ impl Writer {
     /// is the first).
     fn para_in(&mut self, p: &Para, chain: Option<&Vec<Para>>, out: &mut String) {
         let paras: &[Para] = chain.map(|c| c.as_slice()).unwrap_or(std::slice::from_ref(p));
+        let start = self.master.take();
         self.chain = chain.map(|c| c.iter().map(|q| self.para_style(q)).collect()).unwrap_or_default();
         self.part = 0;
-        let style = self.para_style(p);
+        let style = self.para_style_at(p, start.as_ref());
         self.cur_style = style.clone();
         let tag = match p.kind {
             Kind::Heading(n) => {
@@ -442,6 +480,10 @@ impl Writer {
         let chain = |i: usize| chains.and_then(|c| c.get(&i));
         let mut i = 0;
         while let Some(b) = blocks.get(i) {
+            // Only the first top-level block of a section starts its page.
+            if depth == 0 {
+                self.master = self.pending_start.take();
+            }
             match b {
                 FBlock::Table(t) => {
                     if depth < model::MAX_DEPTH {
@@ -489,7 +531,20 @@ impl Writer {
                                 *top = true;
                             }
                             if stack.is_empty() {
-                                out.push_str(&format!("<text:list text:style-name=\"{lname}\">"));
+                                let id = format!("lst{}", self.list_styles.len());
+                                // A list cut by a section boundary goes on numbering: continue-list names the
+                                // preceding list by its xml:id, whatever its style name (ODF 1.3 §19.743).
+                                let prev = self.last_list.clone();
+                                let cont = match prev {
+                                    Some(prev) if depth == 0 && start == 0 && std::mem::take(&mut self.continue_list) => {
+                                        format!(" text:continue-list=\"{prev}\"")
+                                    }
+                                    _ => String::new(),
+                                };
+                                if depth == 0 {
+                                    self.last_list = Some(id.clone());
+                                }
+                                out.push_str(&format!("<text:list xml:id=\"{id}\" text:style-name=\"{lname}\"{cont}>"));
                             } else {
                                 out.push_str("<text:list>");
                             }
@@ -541,6 +596,7 @@ impl Writer {
             vec![468.0 / cols as f32; cols]
         };
         self.tables.push(widths);
+        self.table_starts.push(self.master.take());
         let tn = self.tables.len();
         out.push_str(&format!("<table:table table:name=\"Table{tn}\" table:style-name=\"Table{tn}\">"));
         for c in 0..cols {
@@ -597,9 +653,10 @@ impl Writer {
         for (props, n) in &self.text_styles {
             s.push_str(&format!("<style:style style:name=\"{n}\" style:family=\"text\"><style:text-properties{props}/></style:style>"));
         }
-        for ((parent, props), n) in &self.para_styles {
+        for ((parent, props, master), n) in &self.para_styles {
+            let master = if master.is_empty() { String::new() } else { format!(" style:master-page-name=\"{}\"", x(master)) };
             s.push_str(&format!(
-                "<style:style style:name=\"{n}\" style:family=\"paragraph\" style:parent-style-name=\"{parent}\"><style:paragraph-properties{props}/></style:style>"
+                "<style:style style:name=\"{n}\" style:family=\"paragraph\" style:parent-style-name=\"{parent}\"{master}><style:paragraph-properties{props}/></style:style>"
             ));
         }
         for (i, kinds) in self.list_styles.iter().enumerate() {
@@ -626,8 +683,14 @@ impl Writer {
         for (i, widths) in self.tables.iter().enumerate() {
             let tn = i + 1;
             let total: f32 = widths.iter().sum();
+            let (master, number) = match self.table_starts.get(i).and_then(Option::as_ref) {
+                Some((m, n)) => {
+                    (format!(" style:master-page-name=\"{}\"", x(m)), n.map(|n| format!(" style:page-number=\"{n}\"")).unwrap_or_default())
+                }
+                None => (String::new(), String::new()),
+            };
             s.push_str(&format!(
-                "<style:style style:name=\"Table{tn}\" style:family=\"table\"><style:table-properties style:width=\"{}\" table:align=\"margins\"/></style:style>",
+                "<style:style style:name=\"Table{tn}\" style:family=\"table\"{master}><style:table-properties style:width=\"{}\" table:align=\"margins\"{number}/></style:style>",
                 pt(total)
             ));
             for (c, w) in widths.iter().enumerate() {
@@ -644,6 +707,9 @@ impl Writer {
                 "<style:style style:name=\"Cell{}\" style:family=\"table-cell\"><style:table-cell-properties fo:padding=\"4pt\" fo:border=\"0.5pt solid #000000\"{bg}/></style:style>",
                 i + 1
             ));
+        }
+        for st in &self.section_styles {
+            s.push_str(st);
         }
         s.push_str("</office:automatic-styles>");
         s
@@ -756,7 +822,15 @@ fn now_unix() -> i64 {
     }
 }
 
-fn styles_xml(sec: &wordcraft_doc::SectionProps, body_font: &str) -> String {
+/// `style:columns` (ODF 1.3 §17.12) of equal columns with their gap and, when on, the line between.
+fn columns_xml(c: &Columns) -> String {
+    let sep = if c.separator { "<style:column-sep style:width=\"0.5pt\" style:style=\"solid\" style:color=\"#000000\"/>" } else { "" };
+    format!("<style:columns fo:column-count=\"{}\" fo:column-gap=\"{}\">{sep}</style:columns>", c.count.clamp(1, 45), pt(c.space))
+}
+
+/// One master page per entry of `pages` (name, setup), each with its own page layout `pm1`, `pm2`…
+/// (§16.5, §16.9); the first is the default one, "Standard".
+fn styles_xml(pages: &[(String, wordcraft_doc::SectionProps)], body_font: &str) -> String {
     let mut s = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles {NS}><office:styles>");
     s.push_str(&format!(
         "<style:default-style style:family=\"paragraph\"><style:paragraph-properties fo:margin-bottom=\"8pt\"/><style:text-properties fo:font-family=\"'{}'\" fo:font-size=\"12pt\"/></style:default-style>",
@@ -776,17 +850,26 @@ fn styles_xml(sec: &wordcraft_doc::SectionProps, body_font: &str) -> String {
     s.push_str("<style:style style:name=\"Quotations\" style:family=\"paragraph\" style:parent-style-name=\"Standard\" style:class=\"html\"><style:paragraph-properties fo:margin-left=\"36pt\" fo:margin-right=\"36pt\"/><style:text-properties fo:font-style=\"italic\" fo:color=\"#404040\"/></style:style>");
     s.push_str(&format!("<style:style style:name=\"Preformatted_20_Text\" style:display-name=\"Preformatted Text\" style:family=\"paragraph\" style:parent-style-name=\"Standard\" style:class=\"html\"><style:paragraph-properties fo:margin-top=\"0pt\" fo:margin-bottom=\"0pt\"/><style:text-properties fo:font-family=\"'{}'\" style:font-family-generic=\"modern\" style:font-pitch=\"fixed\" fo:font-size=\"10pt\"/></style:style>", model::MONO_FONT));
     s.push_str("</office:styles><office:automatic-styles>");
-    s.push_str(&format!(
-        "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"{}\" fo:page-height=\"{}\" fo:margin-top=\"{}\" fo:margin-bottom=\"{}\" fo:margin-left=\"{}\" fo:margin-right=\"{}\" style:print-orientation=\"{}\"/></style:page-layout>",
-        pt(sec.page_w),
-        pt(sec.page_h),
-        pt(sec.margin_top),
-        pt(sec.margin_bottom),
-        pt(sec.margin_left),
-        pt(sec.margin_right),
-        if sec.page_w > sec.page_h { "landscape" } else { "portrait" }
-    ));
-    s.push_str("</office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"pm1\"/></office:master-styles></office:document-styles>\n");
+    for (i, (_, sec)) in pages.iter().enumerate() {
+        // A page of several columns carries them in its layout.
+        let cols = if sec.columns.count > 1 { columns_xml(&sec.columns) } else { String::new() };
+        s.push_str(&format!(
+            "<style:page-layout style:name=\"pm{}\"><style:page-layout-properties fo:page-width=\"{}\" fo:page-height=\"{}\" fo:margin-top=\"{}\" fo:margin-bottom=\"{}\" fo:margin-left=\"{}\" fo:margin-right=\"{}\" style:print-orientation=\"{}\">{cols}</style:page-layout-properties></style:page-layout>",
+            i + 1,
+            pt(sec.page_w),
+            pt(sec.page_h),
+            pt(sec.margin_top),
+            pt(sec.margin_bottom),
+            pt(sec.margin_left),
+            pt(sec.margin_right),
+            if sec.page_w > sec.page_h { "landscape" } else { "portrait" }
+        ));
+    }
+    s.push_str("</office:automatic-styles><office:master-styles>");
+    for (i, (name, _)) in pages.iter().enumerate() {
+        s.push_str(&format!("<style:master-page style:name=\"{}\" style:page-layout-name=\"pm{}\"/>", x(name), i + 1));
+    }
+    s.push_str("</office:master-styles></office:document-styles>\n");
     s
 }
 
@@ -815,12 +898,73 @@ fn meta_xml(m: &Meta) -> String {
     s
 }
 
+/// The sections of a flow: each one's setup and the top-level blocks it holds. A paragraph that
+/// carries a section's properties ends it; the document's last section follows the last such
+/// paragraph (and is left out when nothing follows it, unless it is the only one).
+fn flow_sections(blocks: &[FBlock], last: &SectionProps) -> Vec<(SectionProps, std::ops::Range<usize>)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    for (i, b) in blocks.iter().enumerate() {
+        if let FBlock::Para(p) = b
+            && let Some(s) = &p.section
+        {
+            out.push(((**s).clone(), from..i + 1));
+            from = i + 1;
+        }
+    }
+    if from < blocks.len() || out.is_empty() {
+        out.push((last.clone(), from..blocks.len()));
+    }
+    out
+}
+
 /// Write an `.odt` package.
 pub fn export(doc: &Document) -> Result<Vec<u8>, String> {
     let flow = model::from_doc_tracked(doc);
     let mut w = Writer::default();
     let mut body = String::new();
-    w.blocks(&flow.blocks, &mut body, 0);
+    let sections = flow_sections(&flow.blocks, &doc.last_section);
+    // One master page per section that starts a page; the first one is "Standard".
+    let mut pages: Vec<(String, SectionProps)> = Vec::new();
+    // The columns of the page in force: a continuous section with others is a `text:section`.
+    let mut page_cols = Columns::default();
+    for (k, (sec, range)) in sections.iter().enumerate() {
+        let new_page = k == 0 || sec.start != SectionStart::Continuous;
+        if new_page {
+            let name = if k == 0 { "Standard".to_string() } else { format!("Page{}", pages.len() + 1) };
+            pages.push((name.clone(), sec.clone()));
+            page_cols = sec.columns.clone();
+            // The first section needs its paragraph to name the page only to restart numbering.
+            if k > 0 || sec.page_num_start.is_some() {
+                w.pending_start = Some((name, sec.page_num_start));
+            }
+        }
+        // A continuous section whose columns differ from the page's is a `text:section` (§5.4)
+        // with them (one column included). A restart of page numbering isn't written for it: ODF
+        // applies `style:page-number` only together with a master page.
+        let wrapped = k > 0
+            && sec.start == SectionStart::Continuous
+            && (sec.columns.count != page_cols.count || (sec.columns.count > 1 && sec.columns != page_cols));
+        // A list cut at the boundary goes on numbering in the new section.
+        let list_at = |b: Option<&FBlock>| matches!(b, Some(FBlock::Para(p)) if p.list.is_some());
+        w.continue_list = k > 0 && list_at(flow.blocks.get(range.start)) && list_at(range.start.checked_sub(1).and_then(|i| flow.blocks.get(i)));
+        if wrapped {
+            w.close_ins(&mut body);
+            let n = w.section_styles.len() + 1;
+            w.section_styles.push(format!(
+                "<style:style style:name=\"Sect{n}\" style:family=\"section\"><style:section-properties>{}</style:section-properties></style:style>",
+                columns_xml(&sec.columns)
+            ));
+            body.push_str(&format!("<text:section text:style-name=\"Sect{n}\" text:name=\"Section{n}\">"));
+        }
+        w.blocks(flow.blocks.get(range.clone()).unwrap_or(&[]), &mut body, 0);
+        w.pending_start = None;
+        w.continue_list = false;
+        if wrapped {
+            w.close_ins(&mut body);
+            body.push_str("</text:section>\n");
+        }
+    }
     w.close_ins(&mut body);
     let tracked = if w.regions.is_empty() && !doc.settings.track_changes {
         String::new()
@@ -832,7 +976,7 @@ pub fn export(doc: &Document) -> Result<Vec<u8>, String> {
         w.automatic_styles()
     );
     let body_font = doc.styles.default_chr.font.clone().unwrap_or_else(|| wordcraft_doc::styles::BODY_FONT.to_string());
-    let styles = styles_xml(&doc.last_section, &body_font);
+    let styles = styles_xml(&pages, &body_font);
     let meta = meta_xml(&flow.meta);
     let mut manifest = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\">\n<manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.3\" manifest:media-type=\"application/vnd.oasis.opendocument.text\"/>\n<manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/>\n<manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/>\n<manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>\n",
@@ -913,6 +1057,8 @@ struct StyleInfo {
     fmt: FmtDelta,
     align: Option<Align>,
     page_break: bool,
+    /// `fo:keep-with-next`: `Some(true)` for "always", `Some(false)` for "auto".
+    keep_next: Option<bool>,
     outline: Option<u8>,
     border_bottom: bool,
     /// `fo:background-color` of a table-cell style's `style:table-cell-properties`.
@@ -1035,12 +1181,15 @@ fn events(xml: &[u8], mut f: impl FnMut(Ev)) {
 struct Styles {
     map: HashMap<String, StyleInfo>,
     lists: HashMap<String, Vec<bool>>,
+    /// Font of `style:default-style` for paragraphs (the document default, ODF 1.3 §16.4).
+    default_font: Option<String>,
 }
 
 impl Styles {
     fn read(&mut self, xml: &[u8], auto_section_is_auto: bool) {
         let mut in_auto = false;
         let mut cur: Option<(String, StyleInfo)> = None;
+        let mut in_default = false;
         let mut list: Option<(String, Vec<bool>)> = None;
         events(xml, |ev| match ev {
             Ev::Start(q, a) => match local(&q) {
@@ -1051,11 +1200,20 @@ impl Styles {
                             parent: get(&a, "style:parent-style-name").map(String::from),
                             display: get(&a, "style:display-name").map(String::from),
                             auto: in_auto && auto_section_is_auto,
-                            outline: get(&a, "style:default-outline-level").and_then(|v| v.parse::<u8>().ok()),
+                            outline: get(&a, "style:default-outline-level").and_then(|v| v.trim().parse::<u8>().ok()),
                             master_page: get(&a, "style:master-page-name").map(String::from),
                             ..Default::default()
                         };
                         cur = Some((name.to_string(), info));
+                    }
+                }
+                "default-style" if q.starts_with("style:") => in_default = get(&a, "style:family") == Some("paragraph"),
+                "text-properties" if in_default && cur.is_none() => {
+                    if let Some(fam) = get(&a, "fo:font-family").or_else(|| get(&a, "style:font-name")) {
+                        let fam = fam.split(',').next().unwrap_or("").trim().trim_matches(['\'', '"']);
+                        if !fam.is_empty() && !model::is_mono(fam) {
+                            self.default_font = Some(fam.to_string());
+                        }
                     }
                 }
                 "text-properties" => {
@@ -1125,6 +1283,11 @@ impl Styles {
                         if get(&a, "fo:break-before") == Some("page") {
                             s.page_break = true;
                         }
+                        match get(&a, "fo:keep-with-next") {
+                            Some("always") => s.keep_next = Some(true),
+                            Some("auto") => s.keep_next = Some(false),
+                            _ => {}
+                        }
                         if let Some(v) = get(&a, "style:page-number") {
                             s.page_number = Some(v.trim().parse::<u32>().ok().map(|n| n.min(32_767)));
                         }
@@ -1148,7 +1311,7 @@ impl Styles {
                 "list-style" => list = get(&a, "style:name").map(|n| (n.to_string(), vec![false; 10])),
                 "list-level-style-number" | "list-level-style-bullet" | "list-level-style-image" => {
                     if let Some((_, v)) = &mut list {
-                        let lv = get(&a, "text:level").and_then(|l| l.parse::<usize>().ok()).unwrap_or(1).clamp(1, 10);
+                        let lv = get(&a, "text:level").and_then(|l| l.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 10);
                         let ordered = local(&q) == "list-level-style-number" && get(&a, "style:num-format").is_some_and(|f| !f.is_empty());
                         if let Some(slot) = v.get_mut(lv - 1) {
                             *slot = ordered;
@@ -1159,6 +1322,7 @@ impl Styles {
             },
             Ev::End(q) => match local(&q) {
                 "automatic-styles" => in_auto = false,
+                "default-style" if q.starts_with("style:") => in_default = false,
                 "style" if q.starts_with("style:") => {
                     if let Some((n, s)) = cur.take()
                         && self.map.len() < 100_000
@@ -1175,6 +1339,11 @@ impl Styles {
             },
             Ev::Text(_) => {}
         });
+    }
+
+    /// The document's default font: the Standard paragraph style's, else the default style's.
+    fn doc_font(&self) -> Option<String> {
+        self.map.get("Standard").filter(|s| !s.auto).and_then(|s| s.fmt.font.clone()).or_else(|| self.default_font.clone())
     }
 
     fn chain<'a>(&'a self, name: &'a str) -> Vec<(&'a str, &'a StyleInfo)> {
@@ -1221,12 +1390,12 @@ impl Styles {
         self.chain(name).iter().find_map(|(_, s)| s.cell_background)
     }
 
-    /// Paragraph kind, alignment, page break, rule and base formatting. The text formatting of
+    /// Paragraph kind, alignment, page break, rule, keep-with-next and base formatting. The text formatting of
     /// every style in the chain applies (automatic and common, ODF 1.3 §16.2 inheritance), except
     /// the style that gives the paragraph its kind and that style's ancestors: their formatting
     /// is the kind's own look (a heading's size and colour), not direct formatting. `Standard`,
     /// the default paragraph style, holds document defaults and is left out too.
-    fn para(&self, name: &str) -> (Kind, Option<Align>, bool, bool, Fmt) {
+    fn para(&self, name: &str) -> (Kind, Option<Align>, bool, bool, bool, Fmt) {
         let chain = self.chain(name);
         let mut kind = Kind::Normal;
         let mut kind_at = chain.len();
@@ -1261,7 +1430,9 @@ impl Styles {
         for (_, s) in chain.iter().take(kind_at).rev().filter(|(n, s)| s.auto || *n != "Standard") {
             s.fmt.apply(&mut f);
         }
-        (kind, align, pb, rule, f)
+        // Like the text formatting, the kind style's own `fo:keep-with-next` (a heading's) is the kind's look, not direct formatting.
+        let keep_next = chain.iter().take(kind_at).find_map(|(_, s)| s.keep_next).unwrap_or(false);
+        (kind, align, pb, rule, keep_next, f)
     }
 }
 
@@ -1309,6 +1480,8 @@ struct Body<'a> {
     containers: Vec<Vec<FBlock>>,
     fmt: Vec<Fmt>,
     para: Option<Para>,
+    /// The text read last ended in a space collapsed from XML whitespace (not a `text:s`).
+    xml_space_end: bool,
     para_cont: bool,
     /// Open lists: (style name, item open, item used).
     lists: Vec<(Option<String>, bool)>,
@@ -1418,7 +1591,8 @@ impl Body<'_> {
 
     fn start_para(&mut self, style: Option<&str>, heading: Option<u8>) {
         self.end_para();
-        let (mut kind, align, mut pb, rule, base) = style.map(|s| self.styles.para(s)).unwrap_or((Kind::Normal, None, false, false, Fmt::default()));
+        let (mut kind, align, mut pb, rule, keep_next, base) =
+            style.map(|s| self.styles.para(s)).unwrap_or((Kind::Normal, None, false, false, false, Fmt::default()));
         // The section break starts the new page; no page break besides.
         if let Some(next) = style.and_then(|s| self.page_section(s))
             && self.break_section(next)
@@ -1428,7 +1602,7 @@ impl Body<'_> {
         if let Some(h) = heading {
             kind = Kind::Heading(h.clamp(1, 6));
         }
-        let mut p = Para { kind, align, page_break: pb, ..Default::default() };
+        let mut p = Para { kind, align, page_break: pb, keep_next, ..Default::default() };
         if rule && kind == Kind::Normal {
             p.kind = Kind::Rule;
         }
@@ -1437,7 +1611,7 @@ impl Body<'_> {
         {
             let style = self.lists.iter().rev().find_map(|l| l.0.clone());
             let ordered = style.and_then(|s| self.styles.lists.get(&s)).and_then(|v| v.get(lv.min(9)).copied()).unwrap_or(false);
-            p.list = Some(ListInfo { ordered, level: lv.min(8) as u8 });
+            p.list = Some(ListInfo { ordered, level: lv.min(8) as u8, start: 1 });
             self.para_cont = self.item_used.last().copied().unwrap_or(false);
             if let Some(u) = self.item_used.last_mut() {
                 *u = true;
@@ -1476,8 +1650,19 @@ impl Body<'_> {
             || p.mark_ins.is_some()
             || p.mark_del.is_some()
             || p.inlines.iter().any(|i| matches!(i, Inline::Text(_, f) if f.ins.is_some() || f.del.is_some()));
-        if p.kind != Kind::Code && !tracked {
-            p.trim();
+        // Leading XML whitespace is never read (see `text`); a trailing one is trimmed here.
+        // Explicit `text:s` spaces and tabs stay.
+        let xml_space_end = std::mem::take(&mut self.xml_space_end);
+        if p.kind != Kind::Code
+            && !tracked
+            && xml_space_end
+            && let Some(Inline::Text(t, _)) = p.inlines.last_mut()
+            && t.ends_with(' ')
+        {
+            t.pop();
+            if t.is_empty() {
+                p.inlines.pop();
+            }
         }
         if p.kind == Kind::Rule && !p.is_empty() {
             p.kind = Kind::Normal;
@@ -1517,6 +1702,7 @@ impl Body<'_> {
             }
             self.start_para(None, None);
         }
+        self.xml_space_end = false;
         if let Some(p) = &mut self.para {
             p.push_text(t, &f);
         }
@@ -1566,6 +1752,7 @@ impl Body<'_> {
         }
         if !s.is_empty() {
             self.push_text(&s);
+            self.xml_space_end = s.ends_with(' ');
         }
     }
 
@@ -1651,7 +1838,8 @@ impl Body<'_> {
                 self.skip = 1;
             }
             "p" | "h" if !self.in_desc => {
-                let h = if local(q) == "h" { Some(get(a, "text:outline-level").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1)) } else { None };
+                let h =
+                    if local(q) == "h" { Some(get(a, "text:outline-level").and_then(|v| v.trim().parse::<u8>().ok()).unwrap_or(1)) } else { None };
                 self.start_para(get(a, "text:style-name"), h);
             }
             "span" => {
@@ -1673,7 +1861,7 @@ impl Body<'_> {
                 self.fmt.push(f);
             }
             "s" => {
-                let n = get(a, "text:c").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).clamp(1, 1000);
+                let n = get(a, "text:c").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 1000);
                 self.push_text(&" ".repeat(n));
             }
             "tab" => self.push_text("\t"),
@@ -1725,8 +1913,8 @@ impl Body<'_> {
             }
             "table-cell" => {
                 self.end_para();
-                let span = get(a, "table:number-columns-spanned").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 63);
-                let rows = get(a, "table:number-rows-spanned").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 1000);
+                let span = get(a, "table:number-columns-spanned").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(1).clamp(1, 63);
+                let rows = get(a, "table:number-rows-spanned").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(1).clamp(1, 1000);
                 let shading = get(a, "table:style-name").and_then(|s| self.styles.cell_background(s));
                 if let Some(t) = self.tables.last_mut() {
                     t.hcover = span as usize - 1;
@@ -1764,7 +1952,11 @@ impl Body<'_> {
                 self.end_para();
                 if self.cols_at.is_none()
                     && self.in_body()
-                    && let Some(columns) = get(a, "text:style-name").and_then(|s| self.styles.columns(s)).filter(|c| c.count > 1)
+                    && let Some(columns) = get(a, "text:style-name")
+                        .and_then(|s| self.styles.columns(s))
+                        // A section whose columns match the open section's (a plain one-column
+                        // section in a one-column page) is no new section.
+                        .filter(|c| c.count != self.sec.columns.count || (c.count > 1 && *c != self.sec.columns))
                 {
                     let next = SectionProps { start: SectionStart::Continuous, page_num_start: None, columns, ..self.page.clone() };
                     self.break_section(next);
@@ -2139,11 +2331,11 @@ pub fn parse(bytes: &[u8]) -> Result<Flow, String> {
 
 /// [`parse`], with the last section's properties (the others are on the paragraphs that end them).
 fn parse_full(bytes: &[u8]) -> Result<(Flow, SectionProps), String> {
-    parse_tracked(bytes).map(|(f, last, _)| (f, last))
+    parse_tracked(bytes).map(|(f, last, _, _)| (f, last))
 }
 
 /// [`parse_full`], plus whether change tracking is on (`None`: the document has no tracked changes).
-fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>), String> {
+fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Option<String>), String> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("ODT: not a valid package ({e})"))?;
     if let Some(mt) = read_entry(&mut z, "mimetype") {
         let mt = String::from_utf8_lossy(&mt);
@@ -2172,6 +2364,7 @@ fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>), Str
         containers: vec![Vec::new()],
         fmt: Vec::new(),
         para: None,
+        xml_space_end: false,
         para_cont: false,
         lists: Vec::new(),
         lists_saved: Vec::new(),
@@ -2240,13 +2433,16 @@ fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>), Str
         blocks.push(FBlock::Para(Para::default()));
     }
     let track = body.track;
-    Ok((Flow { blocks, meta }, last, track))
+    Ok((Flow { blocks, meta }, last, track, styles.doc_font()))
 }
 
 /// Parse an `.odt` package into a document.
 pub fn import(bytes: &[u8]) -> Result<Document, String> {
-    let (flow, last, track) = parse_tracked(bytes)?;
+    let (flow, last, track, font) = parse_tracked(bytes)?;
     let mut doc = model::to_doc(&flow);
+    if font.is_some() {
+        doc.styles.default_chr.font = font;
+    }
     doc.last_section = last;
     if let Some(t) = track {
         doc.settings.track_changes = t;
@@ -2363,6 +2559,25 @@ mod tests {
         assert_eq!(length("12pt"), Some(12.0));
         assert!((length("2.54cm").unwrap() - 72.0).abs() < 0.01);
         assert_eq!(length("x"), None);
+    }
+
+    #[test]
+    fn default_paragraph_style_font_becomes_document_font() {
+        // LibreOffice keeps the font in the Standard style or in `style:default-style`; the import
+        // used to skip both and the text fell back to the built-in body font.
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text><text:p>Hi</text:p></office:text></office:body></office:document-content>"#
+        );
+        let standard = format!(
+            r#"<office:document-styles {NS_T}><office:styles><style:default-style style:family="paragraph"><style:text-properties style:font-name="DejaVu Serif"/></style:default-style><style:style style:name="Standard" style:family="paragraph"><style:text-properties style:font-name="Times New Roman"/></style:style></office:styles></office:document-styles>"#
+        );
+        let doc = import(&package(&content, Some(&standard))).unwrap();
+        assert_eq!(doc.styles.default_chr.font.as_deref(), Some("Times New Roman"));
+        let only_default = format!(
+            r#"<office:document-styles {NS_T}><office:styles><style:default-style style:family="paragraph"><style:text-properties style:font-name="DejaVu Serif"/></style:default-style></office:styles></office:document-styles>"#
+        );
+        let doc = import(&package(&content, Some(&only_default))).unwrap();
+        assert_eq!(doc.styles.default_chr.font.as_deref(), Some("DejaVu Serif"));
     }
 
     #[test]
@@ -2641,6 +2856,157 @@ mod tests {
         assert_eq!(text(secs[3].0), "Last line");
     }
 
+    /// (start, landscape, width, height, columns, restart, margins) of each section, and the
+    /// text of the paragraph ending it.
+    fn section_summary(doc: &Document) -> Vec<(wordcraft_doc::section::SectionStart, bool, f32, f32, u32, bool, Option<u32>, [f32; 4], String)> {
+        doc.sections()
+            .iter()
+            .map(|(end, s)| {
+                let text = match doc.body.get(*end).map(|b| &**b) {
+                    Some(wordcraft_doc::Block::Para(p)) => p.plain_text().to_string(),
+                    _ => String::new(),
+                };
+                (
+                    s.start,
+                    s.landscape,
+                    s.page_w.round(),
+                    s.page_h.round(),
+                    s.columns.count,
+                    s.columns.separator,
+                    s.page_num_start,
+                    [s.margin_top, s.margin_bottom, s.margin_left, s.margin_right].map(f32::round),
+                    text,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn export_writes_sections_that_import_back() {
+        // Portrait; landscape on a new page restarting at 1; continuous two columns with a
+        // separator; portrait again. Export, import: the same sections.
+        let doc = import(&sections_package()).unwrap();
+        let before = section_summary(&doc);
+        assert_eq!(before.len(), 4, "{before:?}");
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let after = section_summary(&back);
+        assert_eq!(after, before);
+        let (a, b) = (&doc.sections(), &back.sections());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x.1.columns.space - y.1.columns.space).abs() < 0.1, "{:?} vs {:?}", x.1.columns, y.1.columns);
+            assert!((x.1.margin_top - y.1.margin_top).abs() < 0.1 && (x.1.margin_right - y.1.margin_right).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn export_starts_a_section_at_a_table_and_keeps_its_restart() {
+        // A section that starts with a table names its master page on the table's style.
+        let styles = format!(
+            r#"<office:document-styles {NS_T}><office:automatic-styles><style:page-layout style:name="pU"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm"/></style:page-layout><style:page-layout style:name="pW"><style:page-layout-properties fo:page-width="29.7cm" fo:page-height="21cm" style:print-orientation="landscape"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Upright" style:page-layout-name="pU"/><style:master-page style:name="Wide" style:page-layout-name="pW"/></office:master-styles></office:document-styles>"#
+        );
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:automatic-styles><style:style style:name="WideTable" style:family="table" style:master-page-name="Wide"><style:table-properties style:page-number="5"/></style:style></office:automatic-styles><office:body><office:text><text:p>Intro</text:p><table:table table:style-name="WideTable"><table:table-column/><table:table-row><table:table-cell><text:p>Cell</text:p></table:table-cell></table:table-row></table:table><text:p>After</text:p></office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, Some(&styles))).unwrap();
+        let before = section_summary(&doc);
+        assert_eq!(before.len(), 2, "{before:?}");
+        let back = import(&export(&doc).unwrap()).unwrap();
+        assert_eq!(section_summary(&back), before);
+        assert_eq!(back.sections()[1].1.page_num_start, Some(5));
+    }
+
+    /// Master pages `Standard` (portrait) and `Cols` (landscape, two columns with a line) for the
+    /// round-trip tests below.
+    fn cols_styles() -> String {
+        format!(
+            r#"<office:document-styles {NS_T}><office:automatic-styles><style:page-layout style:name="pU"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" fo:margin-top="2cm" fo:margin-bottom="2.2cm" fo:margin-left="2.5cm" fo:margin-right="2.6cm"/></style:page-layout><style:page-layout style:name="pC"><style:page-layout-properties fo:page-width="29.7cm" fo:page-height="21cm" style:print-orientation="landscape" fo:margin-top="1cm" fo:margin-bottom="1.1cm" fo:margin-left="1.2cm" fo:margin-right="1.3cm"><style:columns fo:column-count="2" fo:column-gap="1cm"><style:column-sep style:width="0.02cm" style:style="solid"/></style:columns></style:page-layout-properties></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pU"/><style:master-page style:name="Cols" style:page-layout-name="pC"/></office:master-styles></office:document-styles>"#
+        )
+    }
+
+    /// Import `body` (with automatic `styles`) over [`cols_styles`], export, import: both summaries.
+    fn round_trip(styles: &str, body: &str) -> (Vec<String>, Vec<String>) {
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:automatic-styles>{styles}</office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, Some(&cols_styles()))).unwrap();
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let show = |d: &Document| section_summary(d).iter().map(|s| format!("{s:?}")).collect::<Vec<_>>();
+        (show(&doc), show(&back))
+    }
+
+    #[test]
+    fn export_keeps_a_columned_page_and_the_one_column_part_after_it() {
+        let styles = r#"<style:style style:name="PC" style:family="paragraph" style:master-page-name="Cols"/><style:style style:name="One" style:family="section"><style:section-properties><style:columns fo:column-count="1" fo:column-gap="0cm"/></style:section-properties></style:style>"#;
+        let body = r#"<text:p>Intro</text:p><text:p text:style-name="PC">Two columns</text:p><text:section text:name="S" text:style-name="One"><text:p>One column</text:p></text:section>"#;
+        let (before, after) = round_trip(styles, body);
+        assert_eq!(before.len(), 3, "{before:?}");
+        assert!(before[1].contains(", 2, true,") && before[2].contains("Continuous") && before[2].contains(", 1, false,"), "{before:?}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn plain_one_column_text_sections_do_not_make_sections() {
+        let styles = r#"<style:style style:name="One" style:family="section"><style:section-properties><style:columns fo:column-count="1" fo:column-gap="0cm"/></style:section-properties></style:style>"#;
+        let body = r#"<text:p>A</text:p><text:section text:name="S" text:style-name="One"><text:p>B</text:p></text:section><text:section text:name="T"><text:p>C</text:p></text:section>"#;
+        let (before, after) = round_trip(styles, body);
+        assert_eq!(before.len(), 1, "{before:?}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn export_keeps_a_section_that_starts_on_a_list_item() {
+        let styles = r#"<style:style style:name="PC" style:family="paragraph" style:master-page-name="Cols"/>"#;
+        let body = r#"<text:p>Intro</text:p><text:list><text:list-item><text:p text:style-name="PC">First</text:p></text:list-item><text:list-item><text:p>Second</text:p></text:list-item></text:list><text:p>After</text:p>"#;
+        let (before, after) = round_trip(styles, body);
+        assert_eq!(before.len(), 2, "{before:?}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn a_list_cut_at_a_section_boundary_goes_on_numbering() {
+        let styles = r#"<style:style style:name="PC" style:family="paragraph" style:master-page-name="Cols"/>"#;
+        let body = r#"<text:list><text:list-item><text:p>One</text:p></text:list-item><text:list-item><text:p text:style-name="PC">Two</text:p></text:list-item></text:list>"#;
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:automatic-styles>{styles}</office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, Some(&cols_styles()))).unwrap();
+        let bytes = export(&doc).unwrap();
+        let xml = String::from_utf8(read_entry(&mut archive(&bytes), "content.xml").unwrap()).unwrap();
+        assert_eq!(xml.matches("text:continue-list=\"").count(), 1, "{xml}");
+        // The continuation points at the first list's xml:id.
+        assert!(xml.contains("xml:id=\"lst1\"") && xml.contains("text:continue-list=\"lst1\""), "{xml}");
+        assert_eq!(section_summary(&import(&bytes).unwrap()), section_summary(&doc));
+    }
+
+    #[test]
+    fn export_keeps_a_page_number_restart_on_the_first_section() {
+        let styles = r#"<style:style style:name="PS" style:family="paragraph" style:master-page-name="Standard"><style:paragraph-properties style:page-number="7"/></style:style>"#;
+        let body = r#"<text:p text:style-name="PS">First</text:p><text:p>Second</text:p>"#;
+        let (before, after) = round_trip(styles, body);
+        assert_eq!(before.len(), 1, "{before:?}");
+        assert!(before[0].contains("Some(7)"), "{before:?}");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn export_of_a_one_section_document_stays_simple() {
+        let doc = import(&sections_package()).unwrap();
+        let one = import(&export(&doc).unwrap()).unwrap();
+        let mut single = one.clone();
+        for b in single.body.iter_mut() {
+            if let wordcraft_doc::Block::Para(p) = std::sync::Arc::make_mut(b) {
+                p.section = None;
+            }
+        }
+        let bytes = export(&single).unwrap();
+        let mut z = archive(&bytes);
+        let styles = String::from_utf8(read_entry(&mut z, "styles.xml").unwrap()).unwrap();
+        let content = String::from_utf8(read_entry(&mut z, "content.xml").unwrap()).unwrap();
+        assert_eq!(styles.matches("<style:master-page ").count(), 1);
+        assert!(styles.contains("style:name=\"Standard\" style:page-layout-name=\"pm1\""));
+        assert!(!content.contains("text:section") && !content.contains("master-page-name"), "{content}");
+    }
+
     #[test]
     fn one_master_page_stays_one_section() {
         let styles = format!(
@@ -2713,6 +3079,23 @@ mod tests {
         assert!(matches!(doc.body.get(3).map(|b| &**b), Some(wordcraft_doc::Block::Table(_))));
         // A one-column page layout keeps the default column gap.
         assert_eq!(secs[0].1.columns, wordcraft_doc::section::Columns::default());
+    }
+
+    #[test]
+    fn keep_with_next_survives_import_and_export() {
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:automatic-styles>
+            <style:style style:name="Keep" style:family="paragraph"><style:paragraph-properties fo:keep-with-next="always"/></style:style>
+            <style:style style:name="Loose" style:family="paragraph" style:parent-style-name="Keep"><style:paragraph-properties fo:keep-with-next="auto"/></style:style>
+            </office:automatic-styles><office:body><office:text>
+            <text:p text:style-name="Keep">Kept</text:p><text:p text:style-name="Loose">Loose</text:p><text:p>Plain</text:p>
+            </office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, None)).unwrap();
+        let flags = |d: &Document| d.body.iter().filter_map(|b| b.as_para()).map(|p| p.props.keep_next).collect::<Vec<_>>();
+        assert_eq!(flags(&doc), [Some(true), None, None]);
+        let again = import(&export(&doc).unwrap()).unwrap();
+        assert_eq!(flags(&again), [Some(true), None, None]);
     }
 
     // --- Tracked changes (ODF 1.3 Part 3 §5.5) -------------------------------------------------
@@ -2919,5 +3302,69 @@ mod tests {
         assert!(back.revisions.first().is_some_and(|r| r.date.len() >= 19 && r.date.starts_with("20")), "{:?}", back.revisions);
         assert_eq!(marks(&back), marks(&doc));
         assert_eq!(marks(&back).len(), 1);
+    }
+
+    #[test]
+    fn spaces_after_a_tab_survive_a_round_trip() {
+        for src in ["a\t b", "a\t  b", "a\t   éa", "é\t 😀a", "a\t\t b"] {
+            let doc = Document::from_text(src);
+            let back = import(&export(&doc).unwrap()).unwrap();
+            assert_eq!(back.plain_text(wordcraft_doc::StoryRef::Body).trim_end(), src, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn whitespace_in_attributes_is_trimmed() {
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text>
+            <text:h text:outline-level=" 2 ">Heading</text:h>
+            <text:p>A<text:s text:c=" 3 "/>B</text:p>
+            <table:table>
+                <table:table-column/>
+                <table:table-row>
+                    <table:table-cell table:number-columns-spanned=" 2 " table:number-rows-spanned=" 1 ">
+                        <text:p>Cell</text:p>
+                    </table:table-cell>
+                </table:table-row>
+            </table:table>
+            </office:text></office:body></office:document-content>"#
+        );
+        let flow = parse(&package(&content, None)).unwrap();
+        let h = match &flow.blocks[0] {
+            FBlock::Para(p) => p.kind,
+            _ => panic!("expected heading para"),
+        };
+        assert_eq!(h, Kind::Heading(2));
+
+        let p_text = match &flow.blocks[1] {
+            FBlock::Para(p) => p.text(),
+            _ => panic!("expected paragraph"),
+        };
+        assert_eq!(p_text, "A   B");
+
+        let colspan = match &flow.blocks[2] {
+            FBlock::Table(t) => t.rows[0][0].colspan,
+            _ => panic!("expected table"),
+        };
+        assert_eq!(colspan, 2);
+    }
+
+    #[test]
+    fn explicit_spaces_at_paragraph_ends_are_kept() {
+        // `text:s` spaces are content; only collapsible XML whitespace is trimmed at the ends.
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text><text:p><text:s text:c="4"/>lead</text:p><text:p>trail<text:s text:c="2"/></text:p><text:p>  plain  </text:p><text:p>  <text:s/>x <text:s/> </text:p></office:text></office:body></office:document-content>"#
+        );
+        let f = parse(&package(&content, None)).unwrap();
+        let texts: Vec<String> = paras(&f).iter().map(|p| p.text()).collect();
+        assert_eq!(texts, vec!["    lead", "trail  ", "plain", " x  "]);
+        let d = Document::from_text("    indented code  ");
+        let back = import(&export(&d).unwrap()).unwrap();
+        assert_eq!(back.plain_text(wordcraft_doc::StoryRef::Body).trim_end_matches('\n'), "    indented code  ");
+        for t in ["trail ", "trail  "] {
+            let d = Document::from_text(t);
+            let back = import(&export(&d).unwrap()).unwrap();
+            assert_eq!(back.plain_text(wordcraft_doc::StoryRef::Body).trim_end_matches('\n'), t);
+        }
     }
 }

@@ -195,6 +195,7 @@
 	Use the Insert key to switch overtype on and off	Клавіша Insert вмикає та вимикає режим заміни
 	Whole document	Увесь документ
 	This section	Цей розділ
+	Selected text	До виділеного тексту
 	Fill	Колір заливки
 	Setting:	Тип:
 	3-D	Об'ємна
@@ -582,6 +583,10 @@
 	Modify…	Змінити…
 	Move or Resize	Перемістити або змінити розмір
 	Multilevel List	Багаторівневий список
+	Multilevel List Library	Бібліотека багаторівневих списків
+	Article I.	Стаття I.
+	Chapter 1	Глава 1
+	Section 1.01	Розділ 1.01
 	Multiple Pages	Кілька сторінок
 	Name (A–Z)	Назва (А–Я)
 	Name:	Назва:
@@ -856,6 +861,8 @@
 	Space before/after:	Інтервал перед/після:
 	Spacing	Інтервал
 	Spacing (pt):	Інтервал (пункти):
+	Kerning for fonts:	Кернінг шрифтів:
+	Points and above	пт і більше
 	Speech	Мовлення
 	Spelling & Grammar	Правопис і граматика
 	Spelling &\nGrammar	Правопис і\nграматика
@@ -1495,6 +1502,8 @@
 	Math AutoCorrect	Математичне автовиправлення
 	More >>	Більше >>
 	Moves	Переміщення
+	Moved from:	Переміщено звідси:
+	Moved to:	Переміщено сюди:
 	New document	Новий документ
 	No changes (read only)	Без змін (лише читання)
 	Only allow this kind of editing:	Дозволити лише такий тип редагування:
@@ -1554,6 +1563,8 @@
 	Customize Ribbon	Налаштувати стрічку
 	Add to Quick Access Toolbar	Додати на панель швидкого доступу
 	Remove from Quick Access Toolbar	Видалити з панелі швидкого доступу
+	Hide Quick Access Toolbar	Приховати панель швидкого доступу
+	Show Quick Access Toolbar	Показати панель швидкого доступу
 	Customize the Ribbon…	Налаштувати стрічку…
 	Customize Quick Access Toolbar…	Налаштувати панель швидкого доступу…
 	More Commands…	Інші команди…
@@ -2057,6 +2068,7 @@
 	Hyphenation zone:	Зона перенесення:
 	Italian	Італійська
 	Croatian	Хорватська
+	Indonesian	Індонезійська
 	Japanese	Японська
 	Korean	Корейська
 	Limit consecutive hyphens to:	Обмежити кількість переносів поспіль:
@@ -2140,6 +2152,10 @@
 	Contains	Містить
 	Does not contain	Не містить
 	{count} of {total} recipients will be merged.	Одержувачів для злиття: {count} з {total}.
+	Find in list:	Знайти в списку:
+	Any field	Будь-яке поле
+	Matches: {count}	Збігів: {count}
+	Show only records that will be merged	Показувати лише записи для злиття
 	Take the last match on the page	Брати останній збіг на сторінці
 	Show its list number	Показувати його номер у списку
 	Show its number relative to this field	Показувати його номер відносно цього поля
@@ -2245,3 +2261,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	Вузька
 	Medium	Середня
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Об'єднати клітинки перед розділенням
+	Table size	Розмір таблиці
+	AutoFit behavior	Добір розміру
+	Initial column width:	Початкова ширина стовпців:
+	AutoFit to contents	Добір розміру за вмістом
+	AutoFit to window	Добір розміру за шириною вікна
+	Separate text at	Розділювач тексту
+	Commas	Коми
+	Other:	Інше:
+	The number must be between 1 and {max}.	Число має бути від 1 до {max}.
+	The measurement must be between {min} and {max}.	Розмір має бути від {min} до {max}.
+	Recently Used Fonts	Нещодавно використані шрифти
+	All Fonts	Усі шрифти
+	Spike	Накопичувач
+	Insert Spike	Вставити з накопичувача
+# Add Font status (#1789)
+	Added 1 font	Додано 1 шрифт
+	Added {n} fonts	Додано шрифтів: {n}
+	{added}; {count} couldn't be read: {names}	{added}; не вдалося прочитати ({count}): {names}
+	{names} and {n} more	{names} та ще {n}
+	{added}; {n} skipped (limit {max})	{added}; пропущено: {n} (ліміт {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	У тексті
+	In margin	На полі
+	Drop Cap Options…	Параметри буквиці…
+	Lines to drop:	Висота в рядках:
+	Distance from text:	Відстань від тексту:
+	Distance from text	Відстань від тексту
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Зберігати пропорції
+	Relative to original picture size	Відносно початкового розміру зображення
+	Original size	Початковий розмір
+	{width} × {height} pixels	{width} × {height} пікс.
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Введіть розмір у будь-яких одиницях, наприклад 5 cm або 300 px. Інша сторона зміниться разом із нею, тож зображення збереже пропорції.
+
+	Import…	Імпортувати…

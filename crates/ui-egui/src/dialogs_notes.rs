@@ -147,10 +147,19 @@ pub fn note_options(app: &mut WordApp, ui: &mut Ui, f: &mut NoteForm) -> bool {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            cancel = ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
-            apply = ui.button(tl!("Apply")).clicked();
             let label = if f.endnote { "Insert Endnote" } else { "Insert Footnote" };
-            insert = ui.add(crate::widgets::primary_button(ui, tl!(label))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if cfg!(target_os = "macos") {
+                // macOS: [Apply] [Cancel] [Insert], the default button rightmost.
+                insert = ui.add(crate::widgets::primary_button(ui, tl!(label))).clicked() || enter;
+                cancel = ui.button(tl!("Cancel")).clicked();
+                apply = ui.button(tl!("Apply")).clicked();
+            } else {
+                cancel = ui.button(tl!("Cancel")).clicked();
+                apply = ui.button(tl!("Apply")).clicked();
+                insert = ui.add(crate::widgets::primary_button(ui, tl!(label))).clicked() || enter;
+            }
+            cancel |= crate::dialogs::cancel_key_pressed(ui);
         });
     });
     if insert || apply {

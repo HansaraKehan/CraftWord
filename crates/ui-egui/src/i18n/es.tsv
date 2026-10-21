@@ -198,6 +198,7 @@
 	Use the Insert key to switch overtype on and off	Usar la tecla Insert para activar y desactivar la sobrescritura
 	Whole document	Todo el documento
 	This section	Esta sección
+	Selected text	Texto seleccionado
 	Fill	Relleno de color
 	Setting:	Valor:
 	3-D	3D
@@ -582,6 +583,10 @@
 	More templates →	Más plantillas →
 	Move or Resize	Mover o cambiar tamaño
 	Multilevel List	Lista multinivel
+	Multilevel List Library	Biblioteca de listas multinivel
+	Article I.	Artículo I.
+	Chapter 1	Capítulo 1
+	Section 1.01	Sección 1.01
 	Multiple Pages	Varias páginas
 	Name (A–Z)	Nombre (A–Z)
 	Name:	Nombre:
@@ -867,6 +872,8 @@
 	Space before/after:	Espacio antes y después:
 	Spacing	Espaciado
 	Spacing (pt):	Espaciado (pt):
+	Kerning for fonts:	Interletraje para fuentes:
+	Points and above	puntos o más
 	Speech	Voz
 	Spelling & Grammar	Ortografía y gramática
 	Spelling &\nGrammar	Ortografía y\ngramática
@@ -1523,6 +1530,8 @@
 	Math AutoCorrect	Autocorrección matemática
 	More >>	Más >>
 	Moves	Movimientos
+	Moved from:	Movido desde:
+	Moved to:	Movido a:
 	New document	Documento nuevo
 	No changes (read only)	Sin cambios (solo lectura)
 	Only allow this kind of editing:	Permitir solo este tipo de edición:
@@ -1582,6 +1591,8 @@
 	Customize Ribbon	Personalizar cinta de opciones
 	Add to Quick Access Toolbar	Agregar a la barra de herramientas de acceso rápido
 	Remove from Quick Access Toolbar	Quitar de la barra de herramientas de acceso rápido
+	Hide Quick Access Toolbar	Ocultar la barra de herramientas de acceso rápido
+	Show Quick Access Toolbar	Mostrar la barra de herramientas de acceso rápido
 	Customize the Ribbon…	Personalizar la cinta de opciones…
 	Customize Quick Access Toolbar…	Personalizar barra de herramientas de acceso rápido…
 	More Commands…	Más comandos…
@@ -2085,6 +2096,7 @@
 	Hyphenation zone:	Zona de separación:
 	Italian	Italiano
 	Croatian	Croata
+	Indonesian	Indonesio
 	Japanese	Japonés
 	Korean	Coreano
 	Limit consecutive hyphens to:	Limitar guiones consecutivos a:
@@ -2494,6 +2506,10 @@ preview	Title	Título
 	Contains	Contiene
 	Does not contain	No contiene
 	{count} of {total} recipients will be merged.	Se combinarán {count} de {total} destinatarios.
+	Find in list:	Buscar en la lista:
+	Any field	Cualquier campo
+	Matches: {count}	Coincidencias: {count}
+	Show only records that will be merged	Mostrar solo los registros que se combinarán
 	Take the last match on the page	Tomar la última coincidencia de la página
 	Show its list number	Mostrar su número de lista
 	Show its number relative to this field	Mostrar su número respecto a este campo
@@ -2599,3 +2615,42 @@ preview	Title	Título
 # Reading Mode column widths (#1040)
 	Narrow	Estrecha
 	Medium	Media
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Combinar celdas antes de dividir
+	Table size	Tamaño de la tabla
+	AutoFit behavior	Autoajuste
+	Initial column width:	Ancho de columna inicial:
+	AutoFit to contents	Ajustar al contenido
+	AutoFit to window	Ajustar a la ventana
+	Separate text at	Separar texto en
+	Commas	Comas
+	Other:	Otro:
+	The number must be between 1 and {max}.	El número debe estar entre 1 y {max}.
+	The measurement must be between {min} and {max}.	La medida debe estar entre {min} y {max}.
+	Recently Used Fonts	Fuentes usadas recientemente
+	All Fonts	Todas las fuentes
+	Spike	Acumulador
+	Insert Spike	Insertar acumulador
+# Add Font status (#1789)
+	Added 1 font	1 fuente añadida
+	Added {n} fonts	{n} fuentes añadidas
+	{added}; {count} couldn't be read: {names}	{added}; no se pudieron leer {count}: {names}
+	{names} and {n} more	{names} y {n} más
+	{added}; {n} skipped (limit {max})	{added}; {n} omitidas (límite {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	En texto
+	In margin	En margen
+	Drop Cap Options…	Opciones de letra capital…
+	Lines to drop:	Líneas que ocupa:
+	Distance from text:	Distancia del texto:
+	Distance from text	Distancia del texto
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Bloquear relación de aspecto
+	Relative to original picture size	Relativo al tamaño original de la imagen
+	Original size	Tamaño original
+	{width} × {height} pixels	{width} × {height} píxeles
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Escribe un tamaño en cualquier unidad, como 5 cm o 300 px. El otro lado se ajusta, así que la imagen conserva sus proporciones.
+
+	Import…	Importar…

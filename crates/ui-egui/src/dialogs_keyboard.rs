@@ -106,8 +106,28 @@ pub(crate) fn list(ui: &mut Ui, id: &str, size: egui::Vec2, rows: &[(String, Str
     egui::Frame::new().stroke(ui.visuals().widgets.noninteractive.bg_stroke).inner_margin(2.0).show(ui, |ui| {
         ui.set_width(size.x);
         ui.set_height(size.y);
+        if rows.is_empty() {
+            // #1905: an empty list says so instead of a blank box.
+            ui.centered_and_justified(|ui| ui.label(egui::RichText::new(tl!("(none)")).weak()));
+            return;
+        }
         let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+        // Bring the selected row into view when the selection (or the list) changes, so the row
+        // an action targets is never off-screen; scrolling by hand doesn't change the selection.
+        let seen = ui.make_persistent_id(("scrolled_to", id));
+        let frame = ui.ctx().cumulative_frame_nr();
+        let key = (selected.to_string(), rows.len());
+        let scroll_to = ui.data_mut(|d| {
+            let last = d.get_temp::<(String, usize, u64)>(seen);
+            d.insert_temp(seen, (key.0.clone(), key.1, frame));
+            !last.is_some_and(|(s, n, f)| s == key.0 && n == key.1 && f.saturating_add(1) >= frame)
+        });
+        let row_step = row_h + ui.spacing().item_spacing.y;
         egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
+            if scroll_to && let Some(index) = rows.iter().position(|(value, _)| value == selected) {
+                let top = ui.max_rect().top() + (index as f32 - range.start as f32) * row_step;
+                ui.scroll_to_rect(egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=top + row_h), None);
+            }
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                 for (value, text) in rows.get(range).unwrap_or_default() {
                     if ui.add(egui::Button::selectable(value == selected, text.as_str()).min_size(vec2(0.0, row_h))).clicked() {
@@ -288,5 +308,146 @@ mod tests {
         let mut c = app();
         c.apply_prefs(serde_json::from_str(r#"{"keyboard": {"assigned": {"Mod+Q": "gone.command", "Bad+": 1}, "removed": 7}}"#).unwrap());
         assert!(c.session.keymap.is_empty());
+    }
+
+    /// #1905: a command with no shortcut shows (none) instead of a blank keys box.
+    #[test]
+    fn keys_list_without_shortcuts_says_none() {
+        use super::customize_keyboard;
+
+        let app = || WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let mut a = app();
+        a.run("tools.customizeKeyboard", json!({})).unwrap();
+        let id = a
+            .session
+            .registry
+            .all()
+            .iter()
+            .find(|s| a.session.keymap.keys_for(&a.session.registry, s.id).is_empty())
+            .map(|s| s.id.to_string())
+            .expect("a command with no shortcut");
+        let mut form = match a.dialog.take() {
+            Some(crate::dialogs::Dialog::CustomizeKeyboard { form }) => form,
+            _ => panic!("expected the Customize Keyboard dialog"),
+        };
+        form.command = id;
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        crate::theme::apply(&ctx, crate::theme::Appearance::Light);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).drop_without_applying_deltas();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+            customize_keyboard(&mut a, ui, &mut form);
+        });
+        output.textures_delta.clear();
+        a.dialog = Some(crate::dialogs::Dialog::CustomizeKeyboard { form });
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("(none)")), "empty keys list says (none)");
+    }
+
+    /// The dialog on its own in a harness; fonts are installed on the first frame.
+    fn harness(category: &str, command: Option<&str>) -> egui_kittest::Harness<'static, (WordApp, super::KeyboardForm)> {
+        let app = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let mut form = super::KeyboardForm::read(&app);
+        form.category = category.to_string();
+        form.command = match command {
+            Some(c) => c.to_string(),
+            None => super::commands(&app, category).first().map(|(id, _)| (*id).to_string()).unwrap_or_default(),
+        };
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(700.0, 500.0)).build_ui_state(
+            move |ui, (app, form): &mut (WordApp, super::KeyboardForm)| {
+                if fonts {
+                    super::customize_keyboard(app, ui, form);
+                } else {
+                    crate::theme::install_fonts_for(ui.ctx(), false);
+                    fonts = true;
+                }
+            },
+            (app, form),
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        h
+    }
+
+    type KbHarness<'a> = egui_kittest::Harness<'a, (WordApp, super::KeyboardForm)>;
+
+    /// The area of the Commands list that is on screen: 170 high, below the title, the item
+    /// spacing (3) and the frame's stroke and margin (1 + 2); a pixel of slack for rounding.
+    fn commands_view(h: &KbHarness<'_>) -> egui::Rect {
+        use egui_kittest::kittest::Queryable;
+        let title = h.get_by_label("Commands:").rect();
+        egui::Rect::from_min_size(egui::pos2(title.left(), title.bottom() + 6.0), egui::vec2(310.0, 170.0)).expand(1.0)
+    }
+
+    /// Whether a row labelled `label` is drawn inside the visible part of the Commands list.
+    fn row_in_view(h: &KbHarness<'_>, label: &str) -> bool {
+        use egui_kittest::kittest::Queryable;
+        let view = commands_view(h);
+        h.query_all_by_label(label).any(|n| view.contains_rect(n.rect()))
+    }
+
+    fn settle(h: &mut KbHarness<'_>) {
+        for _ in 0..30 {
+            h.step();
+        }
+    }
+
+    /// #1696: the selected command is scrolled into view when the dialog opens, so Assign never
+    /// targets a command the list doesn't show (also for rows far down the list).
+    #[test]
+    fn selected_command_is_scrolled_into_view() {
+        let probe = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let all = super::commands(&probe, "");
+        for index in [all.len() / 2, all.len() - 1] {
+            let (id, label) = &all[index];
+            let mut h = harness("", Some(id));
+            settle(&mut h);
+            assert!(row_in_view(&h, label), "the selected command {id} ({label}, row {index}) is in view");
+        }
+    }
+
+    /// #1696: after scrolling the Commands list away from the selection, picking another category
+    /// selects its first command and shows it.
+    #[test]
+    fn changing_category_shows_the_new_selection() {
+        use egui_kittest::kittest::Queryable;
+        let probe = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let all = super::commands(&probe, "");
+        let mut h = harness("", None);
+        let wheel = |h: &mut KbHarness<'_>, at: egui::Pos2, dy: f32| {
+            h.event(egui::Event::PointerMoved(at));
+            for _ in 0..60 {
+                h.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                });
+                h.step();
+            }
+        };
+        let commands_at = commands_view(&h).center();
+        wheel(&mut h, commands_at, -3.0);
+        // The Categories list opened scrolled to All Commands (the last one); bring Home back.
+        let categories_at = h.get_by_label("Categories:").rect().center() + egui::vec2(0.0, 40.0);
+        wheel(&mut h, categories_at, 3.0);
+        settle(&mut h);
+        let first_of_home = super::commands(&probe, "Home").remove(0);
+        assert!(!row_in_view(&h, &all[0].1), "the list was scrolled away from its first command");
+        assert!(!row_in_view(&h, &first_of_home.1), "the list was scrolled away from the new selection");
+        h.get_by_label("Home").click();
+        settle(&mut h);
+        assert_eq!(h.state().1.command, first_of_home.0);
+        assert!(row_in_view(&h, &first_of_home.1), "the new selection {} is in view", first_of_home.0);
     }
 }

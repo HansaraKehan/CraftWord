@@ -164,10 +164,12 @@ pub fn body(app: &mut WordApp, ui: &mut Ui, f: &mut ControlForm) -> bool {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // #1906: no forced label color; the theme button text reads on the theme fill.
+            let (okb, cancelb) = crate::dialogs::ok_cancel_responses(ui, |ui| ui.button(tl!("OK")), tl!("Cancel"));
+            if cancelb.clicked() || crate::dialogs::cancel_key_pressed(ui) {
                 done = true;
             }
-            if ui.button(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).clicked() {
+            if okb.clicked() {
                 match app.run("developer.properties", f.params()) {
                     Ok(_) => done = true,
                     Err(e) => app.status(e),

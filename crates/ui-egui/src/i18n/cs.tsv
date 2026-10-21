@@ -711,6 +711,10 @@
 	Move Past Citation	Přejít za citaci
 	Move Past\nCitation	Přejít za\ncitaci
 	Multilevel List	Víceúrovňový seznam
+	Multilevel List Library	Knihovna víceúrovňových seznamů
+	Article I.	Článek I.
+	Chapter 1	Kapitola 1
+	Section 1.01	Oddíl 1.01
 	Multiple Pages	Více stránek
 	Name (A–Z)	Jméno (A–Z)
 	Name of the file this document is saved as	Název souboru dokumentu
@@ -1133,6 +1137,8 @@
 	Space before: {pt} pt	Mezera před: {pt} b.
 	Spacing	Mezery
 	Spacing (pt):	Mezery (b.):
+	Kerning for fonts:	Vyrovnání písma (kerning):
+	Points and above	b. a více
 	Spacing:	Mezera:
 	Special Characters	Speciální znaky
 	Specify height:	Zadat výšku:
@@ -1242,6 +1248,7 @@
 	This font has no characters to show.	Toto písmo neobsahuje žádné znaky k zobrazení.
 	This point forward	Od tohoto místa dále
 	This section	Tento oddíl
+	Selected text	Vybraný text
 	Three	Tři
 	Tight	Těsné
 	Title from the document properties	Název z vlastností dokumentu
@@ -1758,6 +1765,8 @@
 	Customize Ribbon	Přizpůsobit pás karet
 	Add to Quick Access Toolbar	Přidat na panel nástrojů Rychlý přístup
 	Remove from Quick Access Toolbar	Odebrat z panelu nástrojů Rychlý přístup
+	Hide Quick Access Toolbar	Skrýt panel nástrojů Rychlý přístup
+	Show Quick Access Toolbar	Zobrazit panel nástrojů Rychlý přístup
 	Customize the Ribbon…	Přizpůsobit pás karet…
 	Customize Quick Access Toolbar…	Přizpůsobit panel nástrojů Rychlý přístup…
 	More Commands…	Další příkazy…
@@ -2025,6 +2034,7 @@ preview	Title	Ukázka
 	Hyphenation zone:	Pásmo dělení slov:
 	Italian	Italština
 	Croatian	Chorvatština
+	Indonesian	Indonéština
 	Japanese	Japonština
 	Korean	Korejština
 	Limit consecutive hyphens to:	Omezit počet po sobě jdoucích rozdělení:
@@ -2102,6 +2112,8 @@ preview	Title	Ukázka
 	Math AutoCorrect	Automatické opravy matematiky
 	More >>	Více >>
 	Moves	Přesuny
+	Moved from:	Přesunuto odtud:
+	Moved to:	Přesunuto sem:
 	New document	Nový dokument
 	No changes (read only)	Žádné změny (jen pro čtení)
 	Only allow this kind of editing:	Povolit pouze tento typ úprav:
@@ -2313,6 +2325,7 @@ preview	Title	Ukázka
 	{name} already exists. Choose Save again to replace it.	Položka {name} již existuje. Dalším zvolením Uložit ji nahradíte.
 	This folder can't be read: {error}	Tuto složku nelze přečíst: {error}
 	Showing the first {count} items.	Zobrazuje se prvních {count} položek.
+	No items to show.	Žádné položky k zobrazení.
 	File name:	Název souboru:
 	Browse in WordCraft…	Procházet ve WordCraftu…
 	Open a file with WordCraft's own browser when the system file dialog doesn't appear.	Otevřít soubor pomocí vlastního prohlížeče souborů WordCraftu, když se systémový dialog pro práci se soubory nezobrazí.
@@ -2502,6 +2515,10 @@ preview	Title	Ukázka
 	Contains	Obsahuje
 	Does not contain	Neobsahuje
 	{count} of {total} recipients will be merged.	Příjemci ke sloučení: {count} z {total}.
+	Find in list:	Najít v seznamu:
+	Any field	Libovolné pole
+	Matches: {count}	Shody: {count}
+	Show only records that will be merged	Zobrazit jen záznamy, které budou sloučeny
 	Show KeyTips (Alt or F10)	Zobrazit klávesové tipy (Alt nebo F10)
 	Reading	Čtení
 	Reading Column Width	Šířka sloupce pro čtení
@@ -2624,3 +2641,53 @@ preview	Title	Ukázka
 # Reading Mode column widths (#1040)
 	Narrow	Úzká
 	Medium	Střední
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Před rozdělením buňky sloučit
+	Table size	Velikost tabulky
+	AutoFit behavior	Automatické přizpůsobení
+	Initial column width:	Počáteční šířka sloupce:
+	AutoFit to contents	Automaticky přizpůsobit obsahu
+	AutoFit to window	Automaticky přizpůsobit oknu
+	Separate text at	Oddělit text pomocí
+	Commas	Čárky
+	Other:	Jiné:
+	The number must be between 1 and {max}.	Číslo musí být mezi 1 a {max}.
+	The measurement must be between {min} and {max}.	Míra musí být mezi {min} a {max}.
+	Recently Used Fonts	Naposledy použitá písma
+	All Fonts	Všechna písma
+	Spike	Sběrač
+	Insert Spike	Vložit ze sběrače
+# Add Font status (#1789)
+	Added 1 font	Přidáno 1 písmo
+	Added {n} fonts	Přidaná písma: {n}
+	{added}; {count} couldn't be read: {names}	{added}; nelze přečíst ({count}): {names}
+	{names} and {n} more	{names} a dalších {n}
+	{added}; {n} skipped (limit {max})	{added}; přeskočeno: {n} (limit {max})
+	nothing is selected	nic není vybráno
+	select a picture or shape first	nejdřív vyberte obrázek nebo tvar
+	select recipients first	nejdřív vyberte příjemce
+	select two or more pictures or shapes first (Shift+click)	vyberte dva nebo více obrázků či tvarů (Shift+klepnutí)
+	text boxes can't go inside a text box	textové pole nelze vložit do textového pole
+	the cursor isn't in a table	kurzor není v tabulce
+	{name} options	Možnosti: {name}
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	Zapuštěná
+	In margin	Na okraji
+	Drop Cap Options…	Možnosti iniciály…
+	Lines to drop:	Výška v řádcích:
+	Distance from text:	Vzdálenost od textu:
+	Distance from text	Vzdálenost od textu
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	odstavec je prázdný
+	the paragraph starts with a space	odstavec začíná mezerou
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Zamknout poměr stran
+	Relative to original picture size	Vzhledem k původní velikosti obrázku
+	Original size	Původní velikost
+	{width} × {height} pixels	{width} × {height} pixelů
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Zadejte velikost v libovolné jednotce, například 5 cm nebo 300 px. Druhá strana se přizpůsobí, takže obrázek zachová své proporce.
+
+	Import…	Importovat…

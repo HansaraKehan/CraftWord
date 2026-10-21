@@ -218,10 +218,14 @@ pub fn poll(app: &mut WordApp, ctx: &egui::Context) {
 pub fn show_alert(app: &mut WordApp, ctx: &egui::Context) {
     let Some(a) = app.zotero.alert.as_ref() else { return };
     // Buttons and the value Zotero expects for each.
-    let buttons: &[(&str, i64)] = match a.buttons {
-        1 => &[("OK", 1), ("Cancel", 0)],
-        2 => &[("Yes", 1), ("No", 0)],
-        3 => &[("Yes", 2), ("No", 1), ("Cancel", 0)],
+    // macOS puts the default button last (rightmost), with Cancel just before it.
+    let buttons: &[(&str, i64)] = match (a.buttons, cfg!(target_os = "macos")) {
+        (1, false) => &[("OK", 1), ("Cancel", 0)],
+        (1, true) => &[("Cancel", 0), ("OK", 1)],
+        (2, false) => &[("Yes", 1), ("No", 0)],
+        (2, true) => &[("No", 0), ("Yes", 1)],
+        (3, false) => &[("Yes", 2), ("No", 1), ("Cancel", 0)],
+        (3, true) => &[("No", 1), ("Cancel", 0), ("Yes", 2)],
         _ => &[("OK", 1)],
     };
     let mut picked = None;

@@ -891,4 +891,54 @@ mod tests {
             assert_eq!(s.run("equation.get", &json!({})).unwrap()["latex"], want, "{tex}");
         }
     }
+
+    #[test]
+    fn typed_multi_letter_scripts_stay_whole() {
+        // #1609, Word for Mac 16.113.4: `V_dd` + Space leaves "dd" entirely in the subscript.
+        for typed in ["V_dd", "V_(dd)"] {
+            let mut s = session();
+            s.run("insert.equation", &json!({})).unwrap();
+            s.run("equation.type", &json!({"text": typed})).unwrap();
+            s.run("equation.type", &json!({"text": " "})).unwrap();
+            let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+            assert_eq!(nodes.len(), 1, "{typed}: {nodes:#?}");
+            assert!(
+                matches!(&nodes[0], MNode::Script { sub, .. } if matches!(sub.as_slice(), [MNode::Run(r)] if r.text == "dd")),
+                "{typed}: {nodes:#?}"
+            );
+        }
+        let mut s = session();
+        s.run("insert.equation", &json!({})).unwrap();
+        s.run("equation.type", &json!({"text": "x^ab "})).unwrap();
+        let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+        assert!(matches!(&nodes[0], MNode::Script { sup, .. } if matches!(sup.as_slice(), [MNode::Run(r)] if r.text == "ab")), "{nodes:#?}");
+    }
+
+    #[test]
+    fn a_built_script_keeps_the_letter_typed_after_it() {
+        // #1609 review: `x_i y ` built x_{iy}: the letter after a script is its own item.
+        let mut s = session();
+        s.run("insert.equation", &json!({})).unwrap();
+        s.run("equation.type", &json!({"text": "x_i y "})).unwrap();
+        let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+        assert_eq!(nodes.len(), 2, "{nodes:#?}");
+        assert!(matches!(&nodes[0], MNode::Script { sub, .. } if matches!(sub.as_slice(), [MNode::Run(r)] if r.text == "i")), "{nodes:#?}");
+        assert!(matches!(&nodes[1], MNode::Run(r) if r.text.trim() == "y"), "{nodes:#?}");
+        let mut s = session();
+        s.run("insert.equation", &json!({})).unwrap();
+        s.run("equation.type", &json!({"text": "a_i b_j "})).unwrap();
+        let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+        let subs: Vec<&str> = nodes
+            .iter()
+            .filter_map(|n| match n {
+                MNode::Script { sub, .. } => match sub.as_slice() {
+                    [MNode::Run(r)] => Some(r.text.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(subs, ["i", "j"], "{nodes:#?}");
+        assert!(nodes.iter().all(|n| matches!(n, MNode::Script { .. }) || matches!(n, MNode::Run(r) if r.text.trim().is_empty())), "{nodes:#?}");
+    }
 }

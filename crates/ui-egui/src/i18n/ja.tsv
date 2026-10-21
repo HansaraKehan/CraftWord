@@ -213,6 +213,7 @@
 	Use the Insert key to switch overtype on and off	Insert キーで上書きのオンとオフを切り替える
 	Whole document	文書全体
 	This section	このセクション
+	Selected text	選択したテキスト
 	Fill	塗りつぶし
 	Setting:	種類:
 	3-D	立体
@@ -567,6 +568,10 @@
 	Modify…	変更…
 	Move or Resize	移動またはサイズ変更
 	Multilevel List	アウトライン
+	Multilevel List Library	アウトライン ライブラリ
+	Article I.	第 I 条
+	Chapter 1	第 1 章
+	Section 1.01	第 1.01 節
 	Multiple Pages	複数ページ
 	Name (A–Z)	名前（A–Z）
 	Name:	名前:
@@ -830,6 +835,8 @@
 	Space before/after:	段落前/後の間隔:
 	Spacing	間隔
 	Spacing (pt):	間隔 (pt):
+	Kerning for fonts:	カーニングを行う:
+	Points and above	pt 以上
 	Speech	音声
 	Spelling & Grammar	スペル チェックと文章校正
 	Spelling &\nGrammar	スペル チェックと文章校正
@@ -1483,6 +1490,8 @@
 	Math AutoCorrect	数式オートコレクト
 	More >>	オプション >>
 	Moves	移動
+	Moved from:	移動元:
+	Moved to:	移動先:
 	New document	新規文書
 	No changes (read only)	変更不可 (読み取り専用)
 	Only allow this kind of editing:	次の種類の編集のみを許可:
@@ -1542,6 +1551,8 @@
 	Customize Ribbon	リボンのユーザー設定
 	Add to Quick Access Toolbar	クイック アクセス ツール バーに追加
 	Remove from Quick Access Toolbar	クイック アクセス ツール バーから削除
+	Hide Quick Access Toolbar	クイック アクセス ツール バーを非表示にする
+	Show Quick Access Toolbar	クイック アクセス ツール バーを表示する
 	Customize the Ribbon…	リボンのユーザー設定…
 	Customize Quick Access Toolbar…	クイック アクセス ツール バーのユーザー設定…
 	More Commands…	その他のコマンド…
@@ -2045,6 +2056,7 @@
 	Hyphenation zone:	ハイフネーション領域:
 	Italian	イタリア語
 	Croatian	クロアチア語
+	Indonesian	インドネシア語
 	Japanese	日本語
 	Korean	韓国語
 	Limit consecutive hyphens to:	連続するハイフンの上限:
@@ -2128,6 +2140,10 @@
 	Contains	含む
 	Does not contain	含まない
 	{count} of {total} recipients will be merged.	差し込む宛先: {total} 件中 {count} 件
+	Find in list:	リスト内を検索:
+	Any field	任意のフィールド
+	Matches: {count}	一致: {count} 件
+	Show only records that will be merged	差し込むレコードのみ表示
 	Take the last match on the page	ページ内で最後に一致したものを使う
 	Show its list number	リスト番号を表示
 	Show its number relative to this field	このフィールドを基準にした番号を表示
@@ -2233,3 +2249,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	狭い
 	Medium	中
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	分割する前にセルを結合する
+	Table size	表のサイズ
+	AutoFit behavior	自動調整
+	Initial column width:	列の幅の初期値:
+	AutoFit to contents	文字列の幅に合わせる
+	AutoFit to window	ウィンドウ幅に合わせる
+	Separate text at	文字列の区切り
+	Commas	カンマ
+	Other:	その他:
+	The number must be between 1 and {max}.	1 から {max} までの数値を指定してください。
+	The measurement must be between {min} and {max}.	{min} から {max} までの値を指定してください。
+	Recently Used Fonts	最近使用したフォント
+	All Fonts	すべてのフォント
+	Spike	スパイク
+	Insert Spike	スパイクの挿入
+# Add Font status (#1789)
+	Added 1 font	フォントを 1 件追加しました
+	Added {n} fonts	フォントを {n} 件追加しました
+	{added}; {count} couldn't be read: {names}	{added}。読み込めなかったもの {count} 件: {names}
+	{names} and {n} more	{names} ほか {n} 件
+	{added}; {n} skipped (limit {max})	{added}。{n} 件をスキップしました (上限 {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	本文内に表示
+	In margin	余白に表示
+	Drop Cap Options…	ドロップ キャップのオプション…
+	Lines to drop:	ドロップする行数:
+	Distance from text:	本文からの距離:
+	Distance from text	本文からの距離
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	縦横比を固定する
+	Relative to original picture size	元の図のサイズを基準にする
+	Original size	元のサイズ
+	{width} × {height} pixels	{width} × {height} ピクセル
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	5 cm や 300 px など、任意の単位でサイズを入力します。もう一方の辺も合わせて変わるため、図の縦横比は保たれます。
+
+	Import…	インポート…

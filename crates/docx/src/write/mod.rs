@@ -1,6 +1,8 @@
 //! [`Document`] → DOCX.
 
+mod bidi;
 mod embed;
+mod glossary;
 mod settings_merge;
 pub(crate) use settings_merge::has_unowned as settings_has_unowned;
 mod math;
@@ -261,6 +263,13 @@ pub(crate) fn write_parts(doc: &Document, flavor: Flavor) -> Result<Vec<(String,
             &format!("{CT_WML}{}+xml", if footer { "footer" } else { "header" }),
             prels,
         );
+    }
+
+    // The glossary: kept verbatim while its entries are as read and its parts were kept, else
+    // written from the model (before the notes: references its entries hold are collected too).
+    if glossary::edited(doc) || (!doc.glossary.is_empty() && !wr.embeds.kept_glossary()) {
+        wr.embeds.drop_glossary = true;
+        wr.glossary(&mut entries, &mut overrides, &mut rels);
     }
 
     // Notes (references were collected from the body and headers).
@@ -996,6 +1005,9 @@ fn settings_xml(doc: &Document, footnotes: bool, endnotes: bool, template_rel: O
     }
     if s.track_changes {
         w.empty("w:trackRevisions", &[]);
+    }
+    if !s.track_moves {
+        w.empty("w:doNotTrackMoves", &[]);
     }
     if let Some(p) = &s.protection {
         let mut a: Vec<(&str, &str)> = Vec::new();

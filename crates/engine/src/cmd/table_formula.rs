@@ -543,7 +543,13 @@ fn eval(e: &Expr, here: &Here) -> Result<Val, CmdError> {
             let mut v = Vec::new();
             let (r_end, g_end) = (here.t.rows.len().min(r1.saturating_add(1)), here.t.cols().min(g1.saturating_add(1)));
             for row in *r0..r_end {
+                let mut last_ci = None;
                 for g in *g0..g_end {
+                    let ci = here.t.cell_at_grid(row, g);
+                    if ci.is_some() && ci == last_ci {
+                        continue;
+                    }
+                    last_ci = ci;
                     v.extend(here.number_at(row, g)?);
                 }
             }
@@ -812,6 +818,16 @@ mod tests {
         assert_eq!(ev(&t, 2, 0, "=MAX(A1:B2)"), Ok(4.0));
         assert_eq!(ev(&t, 2, 0, "=ROUND(2.5, 0)"), Ok(3.0));
         assert_eq!(ev(&t, 2, 0, "=MOD(7, 3)"), Ok(1.0));
+    }
+
+    #[test]
+    fn range_over_spanning_cells_counts_each_cell_once() {
+        let mut t = table(&[&["50", "10"], &["", ""]]);
+        t.rows[0].cells[0].props.span = 2;
+        assert_eq!(t.cols(), 3);
+        assert_eq!(ev(&t, 1, 0, "=SUM(A1:B1)"), Ok(50.0), "spanning cell A1:B1 is evaluated once");
+        assert_eq!(ev(&t, 1, 0, "=COUNT(A1:B1)"), Ok(1.0), "spanning cell A1:B1 has count 1");
+        assert_eq!(ev(&t, 1, 0, "=SUM(A1:C1)"), Ok(60.0), "spanning cell A1:B1 plus cell C1 = 60");
     }
 
     #[test]

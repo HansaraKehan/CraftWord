@@ -1,6 +1,6 @@
 # Typing parity with Word
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-14 · **Change:** trivial (Shift+Delete cuts the selection on every platform, #1669; previously trivial: Select All then Delete removes a table the document starts with, #1198; previously trivial: Alt+numpad character codes, #961; previously trivial: Down and Up from a line start beside a table go into it, #1007; previously trivial: sample-text formulas on Enter, #1067; previously trivial: Track Changes: Accept All after a tracked delete from a paragraph end keeps the next paragraph; Reject All after typing into an empty paragraph keeps it (#864); previously minor: Correct TWo INitial CApitals, cAPS LOCK and table-cell capitals, #544; previously trivial: complex-script caret and Backspace, #604; Move Paragraph Up/Down, Promote/Demote, Go Back and Alt+X keys, #343) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-18 · **Change:** trivial (a slash opening a word travels whole to the next line, #2963; previously trivial: typing over a selection takes the first selected character's formatting, also when the selection was made right to left, #2879; previously trivial: Turkish and Azerbaijani case mapping in AutoCorrect, #1923; previously trivial: smart quotes in Hebrew pinned: logical order, ” in acronyms as in Word, #1670; previously trivial: Backspace on a selected table, rows or columns deletes them, Delete clears them, #1844; previously trivial: typed text takes its direction from its own letters, #1543; previously trivial: an input method's request to erase text around the caret is honoured, so web typing in Cyrillic and other non-Latin text no longer repeats, #1480; previously trivial: `-->` AutoCorrect replacement, #2223; previously trivial: a heading-list preset keeps Heading styles and makes other paragraphs Heading 1, as in Word, #1793; previously trivial: numbered headings: a heading-linked Multilevel List numbers new headings by their style; numbering keeps a heading a heading, #1793; previously trivial: reversing an automatic capital adds an exception, #1857; previously trivial: smart quotes open after guillemets and low quotes and nest; previously trivial: Enter on an empty list item numbered by its paragraph style moves it up a level, #2143; previously trivial: Backspace after a section break and Delete before it remove the break, also on the last paragraph, #2127; previously trivial: a table inserted in right-to-left text is right to left, so Tab moves left, #2634; previously trivial: Shift+Delete cuts the selection on every platform, #1669; previously trivial: Select All then Delete removes a table the document starts with, #1198; previously trivial: Alt+numpad character codes, #961; previously trivial: Down and Up from a line start beside a table go into it, #1007; previously trivial: sample-text formulas on Enter, #1067; previously trivial: Track Changes: Accept All after a tracked delete from a paragraph end keeps the next paragraph; Reject All after typing into an empty paragraph keeps it (#864); previously minor: Correct TWo INitial CApitals, cAPS LOCK and table-cell capitals, #544; previously trivial: complex-script caret and Backspace, #604; Move Paragraph Up/Down, Promote/Demote, Go Back and Alt+X keys, #343) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 What Word does when you type, observed black-box (same keystrokes typed into Word and
 WordCraft, results read back paragraph by paragraph) and pinned by tests in
@@ -30,7 +30,7 @@ formatting use the existing editing primitives. Tests: `sample_text_formulas_exp
 |---|---|---|
 | `* item` Enter Enter `text` | the second Enter ends the list; `text` is a **Normal** paragraph (no list indent left behind) | `enter_twice_after_a_list_item_ends_the_list`, `the_paragraph_after_a_list_is_normal_text` |
 | … Enter ×3, ×4 | each further Enter adds a blank Normal paragraph (never swallowed) | `more_enters_after_a_list_make_blank_paragraphs` |
-| Enter on an empty **nested** item | moves it up one level; only a top-level empty item leaves the list | `enter_on_an_empty_nested_item_moves_it_up_a_level_first` |
+| Enter on an empty **nested** item | moves it up one level; only a top-level empty item leaves the list. The same when the list comes from the paragraph style (List Number 2 in a Word file, #2143) | `enter_on_an_empty_nested_item_moves_it_up_a_level_first`, `enter_on_an_empty_item_numbered_by_its_style_moves_it_up_a_level` |
 | `* ` Enter (nothing typed) | list cancelled, Normal paragraph | `enter_right_after_starting_a_list_cancels_it` |
 | Tab / Shift+Tab at the start of an item | demote / promote | `shift_tab_and_tab_change_list_levels` |
 | Backspace at the start of an item | 1st: number removed, indent kept; 2nd: Normal paragraph — **not** joined to the one above | `backspace_at_the_start_of_an_item_removes_the_number_then_the_indent` |
@@ -40,6 +40,12 @@ formatting use the existing editing primitives. Tests: `sample_text_formulas_exp
 | `* ` `- ` `1. ` `1) ` `a. ` `a) ` `A. ` `i. ` `I. ` + text | bullet, dash bullet, 1. 1) a. a) A. i. I. lists | `list_autoformat_triggers` |
 | `> ` `-> ` `=> ` + text | bulleted list with an arrow bullet (➢ ➔ ⇨; Word takes them from a symbol font, we use the Unicode arrows) ¹ | `arrow_bullets` |
 | `1. ` after other text | a new list restarting at 1 (never continues an earlier list) | `typing_1_dot_starts_numbering_again` |
+| Heading 1 `One`, Heading 2 `Two`, Heading 1 `Three`, the caret in `Three`, Multilevel List › the "1 / 1.1 / 1.1.1" heading list, then at the end Enter, Heading 2, `Four` Enter `Body` | One = 1, Two = 1.1, Three = 2, styles kept; the new Heading 2 is numbered 2.1 by itself (the heading styles carry the list); `Body` (Normal) stays unnumbered | `a_new_heading_after_a_heading_linked_list_is_numbered` |
+| Numbering on a Heading 1 | "1. One", still Heading 1 | `numbering_a_heading_keeps_the_heading_style` |
+| The "1 / 1.1 / 1.1.1" heading list with a caret or a selection | paragraphs already in a Heading style keep their style and level; every other paragraph style (Normal, Quote, Title…) becomes Heading 1. One H1 / Body / Two H2 → 1, Body H1 "2", Two H2 "2.1"; Two H2 + Three H3 with no Heading 1 above → 1.1, 1.1.1; caret in a Heading 2 → stays Heading 2 "1.1"; Normal alone → Heading 1 "1" (checked in Word for Mac, 2026-10-16) | `a_heading_preset_keeps_headings_and_makes_other_paragraphs_heading_1`, `a_heading_preset_on_a_lone_normal_paragraph_makes_it_heading_1` |
+| Undo after a heading list | one step: paragraph styles and the heading styles' numbers come back | `undo_takes_a_heading_preset_back_in_one_step` |
+| A paragraph whose numbering was switched off, then Heading 2 from a heading-linked list | numbered (1.1) by the style | `applying_a_numbered_heading_style_numbers_the_paragraph` |
+| `1. ` typed in a Heading 1 (also `a) ` in a Heading 2, `1. ` in a Subtitle) | numbered, the style kept; only body text becomes List Paragraph (checked in Word for Mac, 2026-10-15) | `typing_1_dot_in_a_heading_keeps_the_heading_style` |
 | ⌘Z right after an AutoFormat | undoes only the AutoFormat (`* ` comes back as text) | `undo_right_after_autoformat_undoes_only_the_autoformat` |
 
 ## Undo
@@ -49,6 +55,17 @@ formatting use the existing editing primitives. Tests: `sample_text_formulas_exp
 | type, select some of it, type over it | two undo steps: the first ⌘Z brings the selected text back (still selected), the second removes the typing. Uninterrupted typing stays one step | `typing_then_selecting_then_typing_are_two_undo_steps` |
 | ⌘B with nothing selected, ⌘Z, type | the text isn't bold (Undo takes the waiting caret formatting back too); ⌘Y brings it back | `undoing_bold_at_the_caret_turns_bold_typing_off_again` |
 
+## Paste
+
+| Keys | Word's result | Test |
+|---|---|---|
+| Paste (⌘V) of plain text with several lines from another program, in the middle of a right-to-left paragraph | pasted as Keep Text Only pastes it: every line becomes a paragraph formatted like the paragraph it lands in (direction, style, alignment, indents, list), and so does the text after the caret. One ⌘Z takes the whole paste out ² | `plain_text_paste_gives_every_line_the_formatting_of_its_paragraph` |
+| … with empty lines, or a line break at the end | each empty line is an empty paragraph with that formatting too, in a list an empty item. The text takes the formatting before the caret (bold there makes it bold) ² | `plain_text_paste_keeps_empty_lines_as_paragraphs`, `plain_text_paste_keeps_an_empty_paragraph_in_a_list` |
+
+² From Microsoft's description of the paste options: Word offers no options for text without
+formatting, and Keep Text Only gives text the style of the paragraph where it is pasted and the
+formatting of the text before the cursor. Not yet compared side by side in Word.
+
 ## Track Changes
 
 | Keys | Word's result | Test |
@@ -57,7 +74,11 @@ formatting use the existing editing primitives. Tests: `sample_text_formulas_exp
 | Paste of several paragraphs (tracking on) | every paragraph mark the paste adds is a tracked insertion; Reject All restores the one paragraph, Accept All keeps the pasted ones | `reject_all_takes_out_the_paragraph_breaks_a_tracked_paste_inserted` |
 | Backspace at a paragraph start / Delete at a paragraph end (tracking on) | the paragraph mark is marked deleted (still shown); the caret moves before it (Backspace) or past it (Delete). Accept joins the paragraphs, Reject keeps them. A mark you inserted yourself is just removed | `tracked_enter_and_backspace_track_the_paragraph_mark`, `tests::tracked_backspace_and_delete_mark_a_paragraph_break_deleted` |
 | Delete a range from the end of one paragraph into a later one (tracking on) | the paragraph marks and text in the range are tracked deletions. Accept All removes exactly those, so the paragraph after the range stays a paragraph of its own; Reject All restores everything. Typing into an empty paragraph and rejecting leaves that paragraph | `tests::accept_all_after_a_tracked_delete_from_a_paragraph_end_keeps_the_next_paragraph`, `tests::reject_all_after_typing_into_an_empty_paragraph_keeps_the_paragraph` |
+| Backspace just after a section break / Delete just before it | the break goes and the two paragraphs join; the text before it takes the following section's page setup (Word's documented behaviour: a break holds the setup of the section before it); headers and footers the following section showed by linking to the previous one stay. Delete at the end of the last paragraph removes a break on its mark too, with no paragraph to join (with Track Changes on it still does nothing there). Undo brings the break back. Breaks read from a .docx and breaks inserted here alike (#2127) | `backspace_and_delete_remove_a_section_break`, `delete_removes_a_section_break_on_the_last_paragraph` |
 | Select All, then Delete or Backspace | the whole document goes, tables included, also when it starts with a table; one empty paragraph is left | `select_all_then_delete_removes_tables` |
+| Backspace / Delete with a whole table selected (Select Table, or every cell dragged over) | Backspace removes the table, like Delete Table (one undo step; with tracking on its text is marked deleted and the structure stays); the caret goes to the paragraph after it. Delete clears the cells and keeps the table. A nested table goes on its own and leaves the cell's paragraph; a table that was the only block leaves one empty paragraph | `backspace_with_the_whole_table_selected_removes_the_table`, `delete_with_the_whole_table_selected_clears_the_cells_and_keeps_the_table`, `backspace_on_a_selected_nested_table_removes_only_it`, `backspace_on_a_selected_table_that_is_the_only_block_leaves_an_empty_paragraph`, `tracked_backspace_on_a_selected_table_marks_its_text_deleted_like_delete_table` |
+| Backspace / Delete with a table and the paragraph before or after it selected | both remove the table, whatever end the selection starts in; the text around joins. Any table the selection covers whole goes, at any nesting level | `delete_or_backspace_with_the_table_and_the_paragraph_after_selected_removes_the_table`, `delete_or_backspace_with_the_paragraph_before_and_the_table_selected_removes_the_table` |
+| Backspace / Delete with whole rows or columns selected | Backspace deletes the rows or columns (Delete Rows / Delete Columns); Delete clears their cells. One selected cell is just that cell, also in a one-row or one-column table: Backspace clears it. **Differs:** in a 1×1 table, Select Cell then Backspace removes the table (WordCraft has no end-of-row mark to tell the cell from the whole table; the end-of-row caret position is still missing, #1844) | `backspace_deletes_selected_rows_and_delete_clears_them`, `backspace_deletes_selected_columns_and_delete_clears_them`, `backspace_on_one_selected_cell_of_a_one_row_or_one_column_table_clears_it`; `delete_range` edge cases: `edit::tests::a_range_ending_at_the_end_of_a_cell_that_isnt_the_last_keeps_the_table` and five more (other tables, nested tables, story ends, headers and footnotes, content controls, nesting past the paragraph walk) |
 | Table Layout › Delete Table / Rows / Columns / Cells (tracking on) | like Word deleting a selected table: the cells' text is marked deleted and the table structure stays (WordCraft has no tracked row or column deletion, `w:trPr/w:del`, so rows and columns keep their cells too, where Word's Accept removes the rows); text you inserted yourself is just removed; Reject All restores the text. A table, row or column with no text at all (empty, or its deletion already accepted) is removed as with tracking off; one whose text is all already marked deleted is left alone with a message (accept or reject first). Delete Columns leaves a merged cell that also spans a kept column alone (it narrows, keeping its text). A content control locked against deletion, or content locked against editing, refuses the delete with tracking on or off | `tests_revision_checks::tracked_table_delete_marks_the_text_deleted_and_reject_all_restores_it`, `tracked_row_column_and_cell_deletes_mark_their_text_deleted`, `tracked_table_delete_over_tracked_insertions_rejects_back_to_the_original`, `table_deletes_refuse_a_control_locked_against_deletion`, `tracked_delete_table_removes_a_table_with_no_live_text`, `delete_columns_leaves_a_merged_cell_that_keeps_a_column_alone`, `tracked_row_and_column_deletes_over_tracked_changes_reject_back_to_the_original` |
 | Change Case (Shift+F3, Home › Aa) (tracking on) | Word shows no insertion or deletion markup (checked with Formatting markup set to none, so Word may record it as a hidden formatting revision). **Differs:** WordCraft records the changed letters as a tracked deletion of the old and insertion of the new, since case isn't a run property a formatting revision could hold; Reject All restores the old case, Accept All keeps the new. Your own tracked insertion is rewritten in place; already-deleted text is left alone and doesn't count (with tracking off too), so changing case again (or Shift+F3) works from the visible text. Refused in content locked against editing | `tests_revision_checks::tracked_change_case_rejects_back_to_the_original_case`, `tracked_change_case_of_own_insertion_stays_an_insertion`, `tracked_change_case_twice_reads_only_the_live_text`, `tracked_change_case_handles_sharp_s_and_mixed_formatting`, `change_case_refuses_content_locked_against_editing` |
 | Unlink Fields (Ctrl+Shift+F9) (tracking on) | not tracked, like Word: the field's result stays as ordinary text. Refused in content locked against editing | `tests_revision_checks::tracked_unlink_keeps_the_result_as_plain_text`, `unlink_refuses_a_field_in_content_locked_against_editing` |
@@ -69,6 +90,7 @@ Windows/Linux keys are given first, macOS second.
 
 | Keys | Word's result | Test |
 |---|---|---|
+| select text right to left (from its end), type | the new text takes the first selected character's formatting (font, size…), as with a selection made left to right; not the text's before it (#2879) | `typing_over_backward_selection_keeps_its_font` |
 | Down / Up (↓ / ↑) from a line beside a table | into the table's nearest row: the cell under the caret, or the nearest one when the caret is left or right of the cells' text (the start of the line above a table is left of the first cell's text); never past the table to the paragraph beyond it | `down_and_up_from_a_line_start_beside_a_table_go_into_it` |
 | Alt+Shift+Up / Down (⌃⇧↑ / ⌃⇧↓) | the paragraphs the selection touches swap with the paragraph above / below, keeping style and list membership; the selection moves with them; one undo step. A selection ending at the start of a paragraph doesn't take it along. Refused at the top or bottom of the story or cell, next to a table and across a section break | `alt_shift_down_then_up_moves_a_paragraph_and_back_and_undoes` |
 | Alt+Shift+Left / Right (⌃⇧← / ⌃⇧→) | Promote / Demote: a heading goes up or down one level (Heading 1 and Heading 9 are the ends); promoted body text becomes a heading at the level of the heading before it; a list item changes level like Shift+Tab / Tab | `alt_shift_left_and_right_promote_and_demote_headings_and_list_items` |
@@ -83,16 +105,49 @@ Windows/Linux keys are given first, macOS second.
 
 ## AutoCorrect and AutoFormat as you type
 
+The `-->` replacement produces `→` when completed with a space (#2223), including
+at paragraph start without creating a list. It respects AutoCorrect preferences, user
+entries and undo. The existing `-> ` paragraph-start arrow bullet is unchanged.
+
 Applied when a word is finished by a space, punctuation **or Enter** (`enter_finishes_a_word_for_autocorrect`):
 
 - First letter of a sentence (paragraph or list item start, after `. ! ?`) is capitalised; not
   after abbreviations (`e.g.`, `Dr.`, …) or initials (`J.`), and not for mixed-case words
   (`iPhone`) or single-letter labels (`a.`). `teh`→`the`, `i`→`I`, `(c)`→`©`, `(tm)`→`™`,
-  `wait...`→`wait…`, smart quotes (`autocorrect_as_you_type`).
+  `wait...`→`wait…`, smart quotes (`autocorrect_as_you_type`); a quote opens after a space,
+  an opening bracket, a dash, `«` `‹` `„` `‚`, or the other kind of opening quote, so nested
+  quotes curl correctly (`smart_quotes_nested_and_opening_delimiters`).
+  Smart quotes in Hebrew (and other right-to-left text) are chosen from the characters around
+  the quote in logical order, whatever the display direction: `"` after a space or at the start
+  is “ (U+201C) even though it shows on the right of the word, after a letter ” (U+201D); in an
+  acronym (`צה"ל`) it becomes ” as in Word for Mac 16.113.4, not gershayim (״); `'` after a letter
+  (`ג'ירפה`) is ’ as after any letter, with no geresh conversion (not yet checked in Word; `smart_quotes_in_hebrew_use_logical_order`, #1670).
 - Correct TWo INitial CApitals: a finished word of three or more letters with two capitals and
   the rest lowercase loses its second capital (`WOrd`→`Word`, `TEh`→`The`); not the exceptions
   (`IDs`, `CDs`, `PCs`, `TVs`, … plus the user's, `tools.autocorrect {"addInitialCapsException"}`)
   (`two_initial_capitals_are_corrected`).
+- Reversing an automatic capital makes an exception (Word's "Automatically add words to list",
+  observed on the Mac, #1857): Undo of the sentence capital's own step adds the word before it
+  to the First Letter list (`there.`; only words ending in a full stop, the one form seen in
+  Word), and so does Backspacing over the capitalised word and typing it again; the word is then
+  not capitalised after `there.` any more. Any other Undo (of later typing, of a paste) adds
+  nothing, and the capital is forgotten once another Undo runs, a new document is opened, or the
+  undo history is cleared. Each list has its own switch
+  (`tools.autocorrect {"autoAddFirstLetter", "autoAddInitialCaps"}`, on by default); words over
+  255 characters or with spaces are never added. Undoing a replacement (`teh`→`the`) adds
+  nothing: Word doesn't either. Undoing a TWo INitial CApitals fix adds the word to the INitial
+  CAps list (as in Word, checked on the Mac: `TWo ` typed again isn't corrected; same switch rule as First Letter). The first word of a
+  paragraph has no word before it, so nothing is added there; Word also left the retyped first
+  word ("hello") lowercase in that paragraph, which WordCraft doesn't (paragraph-level
+  suppression, only for the paragraph where the Undo happened: Word capitalises the first word
+  of a new paragraph again; a separate follow-up). Word adds nothing in bulleted-list paragraphs; not covered
+  (`undoing_a_sentence_capital_adds_a_first_letter_exception`,
+  `backspacing_a_sentence_capital_and_retyping_adds_a_first_letter_exception`,
+  `automatic_exceptions_can_be_turned_off`, `undoing_a_replacement_adds_no_exception`,
+  `undoing_an_initial_caps_fix_adds_an_initial_caps_exception`,
+  `undoing_other_edits_after_a_capital_adds_no_exception`,
+  `a_full_undo_history_does_not_match_later_undos`, `a_new_document_forgets_the_capital`,
+  `an_overlong_word_is_not_added_as_an_exception`).
 - Correct accidental usage of cAPS LOCK: `wORD`→`Word` (three or more letters; not `iOS`,
   `mRNA`, …). Word also switches Caps Lock off; we only correct the word
   (`accidental_caps_lock_is_corrected`).
@@ -122,6 +177,14 @@ Applied when a word is finished by a space, punctuation **or Enter** (`enter_fin
 - Smileys `:)` `:-)` `:(` `:-(` `:|` → ☺ ☹ 😐, also straight after a word (`ok:)` → `ok☺`) ¹
   (`smileys_are_replaced_inside_words_too`).
 
+- Turkish, Azerbaijani and Crimean Tatar text (the word's language, else the editing language)
+  maps `i` → `İ` and `ı` → `I` when a sentence or day is capitalised, and `I` → `ı` when
+  TWo INitial CApitals / cAPS LOCK lowercase a letter (`istanbul` → `İstanbul`, `İNgilizce` →
+  `İngilizce`, `ılık` → `Ilık`; observed in Word for Mac with Turkish proofing). Lowercasing `İ`
+  gives the single letter `i` in every language, never `i` + combining dot. Other languages keep
+  the Unicode default (`istanbul` → `Istanbul` in English)
+  (`autocorrect_capitalisation_follows_turkic_case_mapping`). Format > Change Case is not yet
+  Turkish-aware.
 - Names of days are capitalised (`monday` → `Monday`). AutoCorrect Options (#412,
   `tools.autocorrect`, saved per user) switch each of these off: replacements, sentence and
   table-cell capitals, days, smart quotes, fractions, ordinals, dashes, links, bulleted and
@@ -140,6 +203,34 @@ Applied when a word is finished by a space, punctuation **or Enter** (`enter_fin
 
 ¹ From Word's documented AutoFormat and AutoCorrect options; not yet keystroke-compared with
 Word.
+## Spelling as you type (#1552)
+
+Word draws no red squiggle under the word being typed. The squiggle comes when the word ends
+(space, punctuation, Enter, Tab) or when the caret leaves it any other way (arrow keys, Home,
+End, a click, a selection). Only the word being typed is exempt: clicking into a misspelled word
+that is already there does not hide its squiggle, and typing into it makes it the word being
+typed again. F7 and the Spelling pane report the word all the while. Grammar marks are not held
+back.
+
+| Keys | Result | Test |
+|---|---|---|
+| `The helo` | no squiggle under `helo`; `review.issues` and F7 (`review.spelling`) still list it | `the_word_being_typed_is_not_marked_until_it_ends` |
+| `The helo` then space, `.`, Enter or Tab | `helo` underlined | same |
+| `The helo` then Left, Home, Ctrl+Left, Ctrl+Home or Select All; End after that | `helo` underlined, and still underlined when the caret comes back | `moving_the_caret_out_of_the_typed_word_marks_it` |
+| `The helo` in one paragraph, a click into another, a click back, `o` typed into it | underlined on leaving; still underlined on return ¹; typing into it hides the mark again until the next space ¹ | `a_click_elsewhere_marks_the_typed_word_and_a_click_back_keeps_the_mark` |
+| `The helo ` then Backspace | the mark goes while the word is edited again ¹ | `backspace_into_a_finished_word_edits_it_again` |
+| `I typed teh ` (AutoCorrect); a phrase by one `text.insert`; Undo | AutoCorrect's result is checked as usual; of inserted text only the word the caret ends in is exempt; Undo moves the caret, so what is left is marked | `autocorrect_and_inserted_text_are_marked_as_usual` |
+| `It doesn'` (smart quotes make it `doesn’`); `The nonn-` then `exist` | no squiggle until the word ends: the apostrophe and the hyphen stay part of the word, as in the spelling check ¹ | `apostrophes_and_hyphens_stay_part_of_the_word_being_typed` |
+| A click at the end of `helo`, then Insert, Delete with nothing after the caret, or Shift+Tab | `helo` stays underlined: only an edit to the text makes it the word being typed ¹ | `text_commands_that_edit_nothing_leave_an_existing_word_marked` |
+
+¹ Follows the rule above; not yet keystroke-compared with Word.
+
+The exemption is a layout input (`LayoutOptions::typing_word`, filtered in
+`crates/layout/src/para.rs`). The Session records the word after a `text.*` command that changes
+the caret's paragraph, and drops it once the caret is anywhere else or the word changed under it
+(`crates/engine/src/session.rs`), so a caret move without an edit lays only that paragraph out
+again.
+
 ## Editing options (File › Options › Advanced)
 
 | Keys / setting | Result | Test |
@@ -155,11 +246,25 @@ Word.
   has letters keeps its direction, and so do opened documents: a paragraph without `w:bidi` stays
   left-to-right whatever its text (`typing_rtl_letters_into_an_empty_paragraph_makes_it_rtl`).
   Word takes the direction from the keyboard language instead; not yet compared side by side.
+- A table inserted in a right-to-left paragraph is a right-to-left table (its first cell at the
+  right), as in Word, so Tab moves to the cell on the left (the next one in reading order) and
+  Shift+Tab back; in a left-to-right table Tab still moves right (#2634,
+  `tab_in_a_table_inserted_in_right_to_left_text_moves_left`).
+- Text typed or inserted (links, fields, symbols, pasted text with merged formatting) takes its
+  direction from its own letters, not from the run around the caret, keeping only that run's
+  bidi language: Latin typed into Hebrew from a reopened file is saved as left-to-right text, and
+  the saved file marks the right-to-left pieces `w:rtl` itself (#1543,
+  `latin_typed_into_reopened_hebrew_is_saved_left_to_right`). Known display difference: spaces,
+  digits and punctuation typed into reopened Hebrew text draw in the Latin font, not the
+  complex-script font, until the file is saved and reopened.
 
 ## Layout
 
 - No line break right after a slash (`and/or`, URLs) unless the word can't fit a line
-  (`layout::tests::no_line_break_right_after_a_slash`).
+  (`layout::tests::no_line_break_right_after_a_slash`). A slash that opens a word after a
+  space (`Kazakh /Russian` captions) travels with it: the break is before the slash, so
+  `/заполняется` moves to the next line whole and is never split between its letters (#2963,
+  `layout::tests::a_word_after_a_slash_wraps_whole`, also in a fixed table cell and not after a no-break space).
 
 ## Complex scripts
 
@@ -171,8 +276,32 @@ Word.
   `myanmar_typing_steps_by_syllable_and_backspaces_by_sign`,
   `indic_and_khmer_backspace_removes_one_character`).
 
+## Input methods
+
+- An input method can ask to erase characters before and after the caret (`DeleteSurrounding`)
+  and send replacement text. The web build's hidden text field does this whenever its contents
+  change other than by adding to the end: Backspace and corrections from phone keyboards, and
+  the Chrome caret jump below. The desktop builds never receive it (egui-winit 0.36 doesn't
+  send it). WordCraft erases those characters as Backspace erases a selection, stopping at the
+  paragraph's ends, then types the new text. The new text keeps the erased text's formatting
+  and never overtypes what follows. Erasing and retyping stay in the open typing undo step, and
+  typing after them joins it too (#1480,
+  `keys::tests::delete_surrounding_from_the_web_text_agent_does_not_repeat_text`,
+  `delete_surrounding_erases_characters_on_both_sides_of_the_caret`,
+  `delete_surrounding_stays_inside_the_paragraph`, `delete_surrounding_joins_the_typing_undo_step`,
+  `delete_surrounding_keeps_the_replaced_texts_formatting`,
+  `delete_surrounding_text_does_not_overtype`, `delete_surrounding_rewrite_ends_at_a_key_press`).
+- After AutoCorrect or AutoFormat changes the text as you type, the web build tells its hidden
+  text field to start afresh. Its later counts then can't reach past the change
+  (`automatic_change_asks_the_input_method_to_start_afresh`). The reset itself happens in eframe
+  and hasn't been checked in a browser.
+
 ## Known gaps
 
+- Web (#1480): Chrome has been seen moving the caret of eframe's hidden text field to its
+  start after the first non-Latin character. Later letters then go in before what was typed
+  since the field was last cleared, so `hello` then `мир` gives `риhelloм`. The text is no
+  longer repeated, but the cause of the caret jump hasn't been found and isn't worked around.
 - Word's body font Aptos isn't installed outside Office; our substitute (Carlito, else Helvetica
   Neue) is wider, so lines wrap earlier than in Word. Needs a metric-matched open substitute.
 - Moving paragraphs with Track Changes on isn't recorded as a tracked move; whole table rows
@@ -196,12 +325,29 @@ Word.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | trivial | Typing over a selection takes the first selected character's formatting, also when the selection was made right to left (#2879) |
+| 2026-10-17 | trivial | A table inserted in a right-to-left paragraph is a right-to-left table, so Tab moves to the cell on the left (#2634) |
+| 2026-10-15 | trivial | Backspace after a section break and Delete before it remove the break, also one on the last paragraph's mark; the text takes the following section's setup and keeps the headers it showed (#2127) |
+| 2026-10-15 | trivial | Enter on an empty nested list item whose numbering comes from its paragraph style (List Number 2) moves it up a level instead of adding another item (#2143) |
+| 2026-10-18 | trivial | Smart quotes open after `«` `‹` `„` `‚` and after the other kind of opening quote, so nested quotes curl correctly |
+| 2026-10-15 | minor | AutoCorrect: undoing the capital's own step (or backspacing it and retyping) adds an exception; "Automatically add words to list" switches (#1857) |
+| 2026-10-16 | trivial | #1793: a heading-list preset keeps paragraphs already in a Heading style at their level and makes other paragraphs Heading 1 (rechecked in Word for Mac); undo test |
+| 2026-10-16 | trivial | #1793: a heading-linked Multilevel List preset makes every selected paragraph its first level (Heading 1), checked in Word for Mac; `1. ` in a heading checked in Word; a single Heading 2 becoming Heading 1 is unchecked |
+| 2026-10-15 | trivial | Numbered headings (#1793): a heading-linked Multilevel List numbers headings through their styles, so a new Heading 2 after the list is numbered by itself; Numbering and `1. ` keep a heading a heading; applying a numbered heading style numbers the paragraph |
+| 2026-10-15 | trivial | Add the missing `-->` → `→` AutoCorrect entry (#2223), with typing, undo and preference regression coverage; existing arrow bullets unchanged |
+| 2026-10-15 | trivial | Input methods (#1480 review): the rewritten text keeps its formatting, doesn't overtype, keeps the typing undo group; AutoCorrect/AutoFormat reset the web text field; desktop doesn't receive `DeleteSurrounding` |
+| 2026-10-15 | trivial | Input methods: `DeleteSurrounding` erases around the caret, so web typing in non-Latin text no longer repeats; Chrome's caret jump in the hidden field is listed as a known gap (#1480) |
+| 2026-10-15 | minor | Backspace with a whole table, whole rows or whole columns selected deletes them; Delete clears them; a selection covering a table and the text beside it removes the table (#1844) |
+| 2026-10-16 | trivial | Smart quotes in Hebrew follow logical order; ” (not gershayim) in acronyms, as Word does (#1670) |
+| 2026-10-15 | trivial | Paste: plain text from another program pastes as Keep Text Only does. Every line takes the formatting of the paragraph it lands in (a right-to-left paragraph stays right-to-left), and empty lines stay empty paragraphs |
+| 2026-10-15 | trivial | Spelling as you type: the word being typed, apostrophes and hyphens included, is not marked until the caret leaves it; F7 and the Spelling pane still report it (#1552) |
 | 2026-10-14 | trivial | Shift+Delete cuts the selection, and does nothing without one, on macOS and Linux too, as in Word for Windows (#1669); Shift+Backspace already erased (#707) |
 | 2026-10-13 | trivial | Select All then Delete or Backspace removes a table the document starts with (#1198) |
 | 2026-10-12 | trivial | Editing keys: Down and Up from the start of a line beside a table go into it instead of skipping it (#1007) |
 | 2026-10-12 | trivial | Sample-text formulas on Enter (#1067), exact matching, bounded parameters, original English and one-step undo |
 | 2026-10-13 | minor | Alt+numpad decimal character codes: the ANSI code page with a leading 0, the OEM page without (the system locale's on Windows: 1250–1254, 437/737/850/852/857/866), Unicode above 255 (#961) |
 | 2026-10-13 | trivial | Fields: text typed or pasted just after a field (a Zotero citation) goes outside it (#898) |
+| 2026-10-15 | trivial | AutoCorrect: Turkish/Azerbaijani case mapping (i↔İ, ı↔I), no combining dot from İ (#1923) |
 | 2026-10-14 | trivial | Track Changes: a table delete over text already marked deleted changes nothing, so Reject All still restores it (#1329 review 2) |
 | 2026-10-14 | trivial | Track Changes: empty tables are removed under tracking; Delete Columns leaves merged cells that keep a column; repeated Change Case reads only live text (#1329 review) |
 | 2026-10-14 | trivial | Track Changes: table deletes mark the cells' text deleted and keep the table; Change Case is a tracked delete+insert (differs from Word's hidden formatting revision); Unlink Fields stays untracked; all three refuse locked content controls (#1329) |
@@ -225,3 +371,4 @@ Word.
 | 2026-10-10 | trivial | Status line, revision history and cross-links added (progress-docs standard) |
 | 2026-10-10 | minor | Track Changes rows: tracked Enter, Backspace and Delete on paragraph marks (#244) |
 | 2026-10-10 | major | First version: lists, AutoCorrect and AutoFormat as you type, observed against Word (#204) |
+| 2026-10-15 | trivial | Text direction: typed and inserted text takes its direction from its own letters, not the caret's run; spaces typed into reopened Hebrew draw in the Latin font until reopened (#1543) |

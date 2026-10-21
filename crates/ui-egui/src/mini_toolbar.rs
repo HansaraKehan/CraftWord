@@ -215,8 +215,9 @@ fn content(app: &mut WordApp, ui: &mut egui::Ui, t: &Tokens) {
         let font = st.get("font").and_then(Value::as_str).unwrap_or("").to_string();
         let font = app.previews.font_shown(&font);
         let fams = app.previews.families();
+        let recent: Vec<String> = app.ui.recent_fonts.iter().map(|f| app.previews.font_shown(f)).collect();
         let prev = app.previews.font_preview_fn();
-        if let Some(f) = widgets::font_combo(ui, "mini_font", COMBO_FONT_W, &font, &fams, Some(&*prev)) {
+        if let Some(f) = widgets::font_combo_with_recent(ui, "mini_font", COMBO_FONT_W, &font, &fams, &recent, Some(&*prev)) {
             let _ = if f == crate::widgets::ADD_FONT {
                 app.run("font.add", json!({}))
             } else if f == crate::widgets::LOAD_SYSTEM_FONTS {
@@ -273,8 +274,10 @@ fn sep(ui: &mut egui::Ui, t: &Tokens) {
     p.vline(r.center().x, r.y_range().shrink(4.0), egui::Stroke::new(1.0, t.border));
 }
 
-/// Highlight colour grid, matching the ribbon's.
-fn highlight_menu(ui: &mut egui::Ui, app: &mut WordApp) {
+/// Highlight colour grid and No Color, shared by the ribbon and the mini toolbar. The pick,
+/// No Color too, becomes the split button's colour, as in Word: after No Color a click on the
+/// button removes highlighting (#2105).
+pub(crate) fn highlight_menu(ui: &mut egui::Ui, app: &mut WordApp) {
     egui::Grid::new("mini_hl").spacing(Vec2::new(3.0, 3.0)).show(ui, |ui| {
         for (i, h) in wordcraft_doc::props::Highlight::ALL.iter().enumerate().skip(1) {
             let Some(c) = h.rgb() else { continue };
@@ -282,7 +285,7 @@ fn highlight_menu(ui: &mut egui::Ui, app: &mut WordApp) {
             ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(c.0, c.1, c.2));
             if resp.on_hover_text(h.name()).clicked() {
                 app.canvas.last_highlight = h.ooxml().to_string();
-                let _ = app.run("format.highlight", json!({"color": h.ooxml()}));
+                widgets::run_from_ribbon(app, "format.highlight", json!({"color": h.ooxml()}));
                 ui.close();
             }
             if i % 5 == 0 {
@@ -290,8 +293,10 @@ fn highlight_menu(ui: &mut egui::Ui, app: &mut WordApp) {
             }
         }
     });
-    if ui.selectable_label(false, "No Color").clicked() {
-        let _ = app.run("format.highlight", json!({"color": "none"}));
+    let enabled = widgets::enabled(app, "format.highlight");
+    if ui.add_enabled(enabled, egui::Button::new(tl!("No Color")).min_size(Vec2::new(200.0, 0.0))).clicked() {
+        app.canvas.last_highlight = "none".into();
+        widgets::run_from_ribbon(app, "format.highlight", json!({"color": "none"}));
         ui.close();
     }
 }
@@ -300,7 +305,7 @@ fn highlight_menu(ui: &mut egui::Ui, app: &mut WordApp) {
 fn font_color_menu(ui: &mut egui::Ui, app: &mut WordApp) {
     egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
         if ui.selectable_label(false, "Automatic").clicked() {
-            let _ = app.run("format.color", json!({"color": "auto"}));
+            widgets::run_from_ribbon(app, "format.color", json!({"color": "auto"}));
             ui.close();
             return;
         }
@@ -636,5 +641,88 @@ mod tests {
         click_at(&mut h, twenty);
         assert_eq!(format_state(&mut h).get("size").and_then(Value::as_f64), Some(20.0), "the bar's size list applied 20 pt");
         assert!(visible(h.state()) && bar_layer(&h).is_some(), "the bar stays up after its own list is used");
+    }
+
+    /// #2105: No Color removed the highlight but the Highlight button kept the colour picked
+    /// before, so the next click on it highlighted again. As in Word, No Color becomes the
+    /// button's choice: the next click removes highlighting.
+    #[test]
+    fn no_color_becomes_the_highlight_buttons_choice() {
+        use egui_kittest::kittest::{By, Queryable};
+        let mut h = bar_over("brown fox");
+        h.state_mut().run("format.highlight", json!({"color": "yellow"})).unwrap();
+        steps(&mut h);
+        // The bar's split buttons are Highlight then Font Color; their arrows are 11 × 22.
+        let highlight_arrow = |h: &egui_kittest::Harness<'static, WordApp>| {
+            let [bar, _] = h.ctx.data(|d| d.get_temp::<[Rect; 2]>(shown_id())).expect("the bar is shown over a selection");
+            h.query_all(
+                By::new().predicate(|n| n.raw_bounds().is_some_and(|r| ((r.x1 - r.x0) - 11.0).abs() < 0.5 && ((r.y1 - r.y0) - 22.0).abs() < 0.5)),
+            )
+            .map(|n| n.rect())
+            .filter(|r| bar.contains_rect(*r))
+            .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .expect("the bar has the Highlight split button")
+        };
+        let arrow = highlight_arrow(&h);
+        click_at(&mut h, arrow.center());
+        let no_color = h.get(By::new().label_contains("No Color")).rect().center();
+        click_at(&mut h, no_color);
+        assert_eq!(format_state(&mut h).get("highlight"), Some(&Value::Null), "No Color removed the highlight");
+        assert_eq!(h.state().canvas.last_highlight, "none");
+
+        // Other highlighted text, then the button itself (left of its arrow): no highlight.
+        h.state_mut().run("select.text", json!({"text": "lazy"})).unwrap();
+        h.state_mut().run("format.highlight", json!({"color": "yellow"})).unwrap();
+        steps(&mut h);
+        let arrow = highlight_arrow(&h);
+        click_at(&mut h, pos2(arrow.min.x - 12.0, arrow.center().y));
+        assert_eq!(format_state(&mut h).get("highlight"), Some(&Value::Null), "the button applies No Color, not yellow again");
+    }
+
+    /// #3039: picking Automatic from the bar's font-colour menu hands the keyboard back to the
+    /// document.
+    #[test]
+    fn the_font_colour_menus_automatic_returns_focus_to_the_document() {
+        use egui_kittest::kittest::{By, Queryable};
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Hello")), Default::default());
+        a.run("select.all", json!({})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(Vec2::new(400.0, 400.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                egui::Area::new(egui::Id::new("font_colour_probe")).fixed_pos(pos2(50.0, 50.0)).show(ui.ctx(), |ui| {
+                    font_color_menu(ui, app);
+                });
+            },
+            a,
+        );
+        steps(&mut h);
+        let automatic = h.get(By::new().label_contains("Automatic")).rect().center();
+        h.state_mut().canvas.want_focus = false;
+        click_at(&mut h, automatic);
+        assert!(h.state().canvas.want_focus, "Automatic returns focus to the document");
+    }
+
+    /// #3038: a pick from the bar's highlight grid hands the keyboard back to the document,
+    /// like the No Color button beside the swatches (it ran through `run_from_ribbon` already).
+    #[test]
+    fn picking_a_highlight_swatch_returns_focus_to_the_document() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Hello")), Default::default());
+        a.run("select.all", json!({})).unwrap();
+        let origin = egui::Id::new("hl_swatch_origin");
+        let mut h = egui_kittest::Harness::builder().with_size(Vec2::new(400.0, 300.0)).build_ui_state(
+            move |ui, app: &mut WordApp| {
+                egui::Area::new(egui::Id::new("hl_probe")).fixed_pos(pos2(100.0, 100.0)).show(ui.ctx(), |ui| {
+                    ui.ctx().data_mut(|d| d.insert_temp(origin, ui.next_widget_position()));
+                    highlight_menu(ui, app);
+                });
+            },
+            a,
+        );
+        steps(&mut h);
+        // The first rendered swatch is Yellow (None is skipped), 18 × 18 at the grid's origin.
+        let first = h.ctx.data(|d| d.get_temp::<egui::Pos2>(origin)).expect("the grid drew");
+        h.state_mut().canvas.want_focus = false;
+        click_at(&mut h, first + Vec2::new(9.0, 9.0));
+        assert!(h.state().canvas.want_focus, "the swatch pick returns focus to the document");
+        assert!(format_state(&mut h).get("highlight").is_some_and(|v| !v.is_null()), "the first swatch applied a highlight");
     }
 }

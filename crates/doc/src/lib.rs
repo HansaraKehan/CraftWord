@@ -24,6 +24,8 @@ pub mod eq;
 pub mod fields;
 pub mod freeform;
 pub mod graphic;
+pub mod legacy_form;
+pub mod line_dash;
 pub mod link;
 pub mod locale_number;
 pub mod math;
@@ -310,6 +312,11 @@ pub struct TextBody {
     /// Resize shape to fit text (`a:spAutoFit`, VML `mso-fit-shape-to-text`): Word grows the
     /// box to its text, so none of the text is cut.
     pub auto_fit: bool,
+    /// The colour the shape's style gives its text (`wps:style/a:fontRef`): what automatic text
+    /// colour means inside this box, instead of black. Text whose colour comes from its runs,
+    /// styles or the document defaults keeps it (Word, observed with synthetic documents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_color: Option<props::Rgb>,
 }
 
 /// Word's default text box margins (left, top, right, bottom), EMU: 0.1" and 0.05".
@@ -387,6 +394,40 @@ impl Document {
     }
 }
 
+/// A building block (Insert › Quick Parts, AutoText…) kept in the document's glossary
+/// (ECMA-376 §17.12: `w:docPart`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BuildingBlock {
+    /// The entry's name (`w:docPartPr/w:name`).
+    pub name: String,
+    /// Its gallery (`w:category/w:gallery`: `docParts` for Quick Parts, `autoTxt` for AutoText…).
+    pub gallery: String,
+    /// Its category within the gallery (`w:category/w:name`, e.g. "General").
+    pub category: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The entry's identity (`w:guid`), kept as read.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub guid: String,
+    /// The paragraph style it's associated with (`w:style`), kept as read.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub style: String,
+    /// Its types (`w:types/w:type`: `normal`, `bbPlcHdr` for a content control's placeholder…).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+    /// How it's inserted (`w:behaviors/w:behavior`: `content`, `p`, `pg`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub behaviors: Vec<String>,
+    /// The content (`w:docPartBody`).
+    pub blocks: Blocks,
+}
+
+/// The gallery Quick Parts saves to (`w:gallery w:val="docParts"`).
+pub const QUICK_PARTS_GALLERY: &str = "docParts";
+/// The AutoText gallery (`w:gallery w:val="autoTxt"`).
+pub const AUTO_TEXT_GALLERY: &str = "autoTxt";
+
 /// A bibliography source.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -448,6 +489,10 @@ pub struct CoreProps {
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub track_changes: bool,
+    /// Record a tracked cut and paste of a sentence or paragraph as a move (Track moves); off
+    /// when the file has `w:doNotTrackMoves` (ECMA-376 §17.15.1.29), and then it is an
+    /// ordinary deletion and insertion.
+    pub track_moves: bool,
     /// Default tab stop interval, points.
     pub default_tab: f32,
     pub even_odd_headers: bool,
@@ -614,6 +659,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             track_changes: false,
+            track_moves: true,
             default_tab: 36.0,
             even_odd_headers: false,
             mirror_margins: false,
@@ -682,6 +728,9 @@ pub struct Document {
     /// Source-format parts we keep verbatim for round-trip (e.g. custom XML), by part name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub passthrough: BTreeMap<String, Arc<Vec<u8>>>,
+    /// The document's own building blocks (its glossary document), in file order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub glossary: Vec<BuildingBlock>,
 }
 
 impl Default for Document {
@@ -709,6 +758,7 @@ impl Document {
             endnote_separators: NoteSeparators::default(),
             media: BTreeMap::new(),
             passthrough: BTreeMap::new(),
+            glossary: Vec::new(),
         }
     }
 
@@ -976,6 +1026,18 @@ impl Document {
             return s;
         }
         &mut self.last_section
+    }
+
+    /// Remove the section break on the mark of top-level body paragraph `block`: its section
+    /// joins the following one ([`SectionProps::absorb`]). False when there is no break there.
+    pub fn remove_section_break(&mut self, block: usize) -> bool {
+        if !matches!(self.body.get(block).map(|b| &**b), Some(Block::Para(p)) if p.section.is_some()) {
+            return false;
+        }
+        let Some(Block::Para(p)) = self.body.get_mut(block).map(Arc::make_mut) else { return false };
+        let Some(before) = p.section.take() else { return false };
+        self.section_mut(block).absorb(&before);
+        true
     }
 
     /// Allocate a new part id and insert the part. Part ids run out only past `u32::MAX` parts, more
@@ -1387,8 +1449,11 @@ pub fn count_words(s: &str) -> usize {
     s.split(|c: char| c.is_whitespace() || c == para::OBJ).filter(|w| w.chars().any(char::is_alphanumeric)).count()
 }
 
+/// How deep in nested tables [`Document::para_paths`] goes: cells below this are skipped.
+pub(crate) const PARA_WALK_DEPTH: usize = 16;
+
 fn walk(bl: &Blocks, prefix: &mut Vec<u32>, out: &mut Vec<Path>, depth: usize) {
-    if depth > 16 {
+    if depth > PARA_WALK_DEPTH {
         return;
     }
     for (i, b) in bl.iter().enumerate() {
@@ -1403,6 +1468,49 @@ fn walk(bl: &Blocks, prefix: &mut Vec<u32>, out: &mut Vec<Path>, depth: usize) {
                         walk(&cell.blocks, prefix, out, depth + 1);
                         prefix.pop();
                         prefix.pop();
+                    }
+                }
+            }
+        }
+        prefix.pop();
+    }
+}
+
+/// [`walk`] for the paragraphs from path `a` to `b` inclusive, skipping the blocks outside.
+pub(crate) fn walk_between(bl: &Blocks, prefix: &mut Vec<u32>, out: &mut Vec<Path>, depth: usize, (a, b): (&[u32], &[u32])) {
+    use std::cmp::Ordering::{Greater, Less};
+    if depth > PARA_WALK_DEPTH {
+        return;
+    }
+    // Where the paths starting with `q` lie against `x`: all before, all after, or either.
+    let side = |q: &[u32], x: &[u32]| {
+        let m = q.len().min(x.len());
+        q[..m].cmp(&x[..m])
+    };
+    for (i, blk) in bl.iter().enumerate() {
+        prefix.push(i as u32);
+        if side(prefix, b) == Greater {
+            prefix.pop();
+            break;
+        }
+        if side(prefix, a) != Less {
+            match &**blk {
+                Block::Para(_) => {
+                    if prefix.as_slice() >= a && prefix.as_slice() <= b {
+                        out.push(Path(prefix.clone()));
+                    }
+                }
+                Block::Table(t) => {
+                    for (r, row) in t.rows.iter().enumerate() {
+                        for (c, cell) in row.cells.iter().enumerate() {
+                            prefix.push(r as u32);
+                            prefix.push(c as u32);
+                            if side(prefix, a) != Less && side(prefix, b) != Greater {
+                                walk_between(&cell.blocks, prefix, out, depth + 1, (a, b));
+                            }
+                            prefix.pop();
+                            prefix.pop();
+                        }
                     }
                 }
             }

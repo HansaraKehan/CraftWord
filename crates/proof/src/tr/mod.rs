@@ -40,16 +40,21 @@ pub fn dictionary() -> Arc<TrDict> {
 
 fn load_installed() -> TrDict {
     let Some((aff, dic)) = crate::hunspell::find(NAMES) else {
+        crate::hunspell::clear_load_error(NAMES[0]);
         log::info!("Turkish spelling: no Hunspell tr_TR dictionary installed");
         return TrDict::default();
     };
     let read = |p: &std::path::Path| std::fs::read_to_string(p);
     match (read(&aff), read(&dic)) {
-        (Ok(aff_text), Ok(dic_text)) => TrDict::from_hunspell(&aff_text, &dic_text).unwrap_or_else(|e| {
+        (Ok(aff_text), Ok(dic_text)) => crate::hunspell::note_load(NAMES[0], &dic, TrDict::from_hunspell(&aff_text, &dic_text)).unwrap_or_else(|e| {
             log::warn!("Turkish spelling: {e}");
             TrDict::default()
         }),
-        _ => TrDict::default(),
+        (a, d) => {
+            let reason = a.err().or(d.err()).map_or_else(String::new, |e| e.to_string());
+            let _ = crate::hunspell::note_load::<()>(NAMES[0], &dic, Err(reason));
+            TrDict::default()
+        }
     }
 }
 

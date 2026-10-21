@@ -74,6 +74,11 @@ impl Pen<'_> {
 /// Paint icon `name` into `r`. `c` is the line colour; the accent comes from the theme.
 pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
     let pen = Pen { p, r, c, a: accent, w: 1.25 };
+    if let Some(kind) = name.strip_prefix("shape.")
+        && shape(&pen, kind)
+    {
+        return;
+    }
     let a = accent;
     let red = Color32::from_rgb(0xD1, 0x3B, 0x3B);
     let yellow = Color32::from_rgb(0xF2, 0xC8, 0x11);
@@ -1332,6 +1337,44 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.closed(&[(5.0, 8.5), (5.0, 17.0), (15.0, 17.0), (15.0, 8.5)], c);
             pen.frect(8.5, 12.0, 11.5, 17.0, a);
         }
+        // File (Backstage) side menu (#1714). Save As: the save disk with a pencil across its corner.
+        "saveAs" => {
+            pen.closed(&[(2.5, 2.5), (11.5, 2.5), (14.5, 5.5), (14.5, 14.5), (2.5, 14.5)], c);
+            pen.frect(5.0, 2.5, 10.5, 6.0, a);
+            pen.rect(5.0, 9.5, 12.0, 14.5, c);
+            pen.fill(&[(11.0, 17.0), (17.0, 11.0), (18.5, 12.5), (12.5, 18.5)], a);
+            pen.fill(&[(11.0, 17.0), (12.5, 18.5), (10.0, 19.5)], c);
+        }
+        // Export: a page with an arrow leaving it.
+        "export" => {
+            pen.page(2.5, 2.0, 12.5, 18.0);
+            pen.line_c(&[(7.5, 10.0), (18.0, 10.0)], a);
+            pen.line_c(&[(15.0, 7.0), (18.0, 10.0), (15.0, 13.0)], a);
+        }
+        // Options: a gear.
+        "options" => {
+            for k in 0..8 {
+                let t = k as f32 * std::f32::consts::FRAC_PI_4;
+                let at = |radius: f32, dt: f32| (10.0 + radius * (t + dt).cos(), 10.0 + radius * (t + dt).sin());
+                pen.fill(&[at(5.0, -0.28), at(8.2, -0.17), at(8.2, 0.17), at(5.0, 0.28)], c);
+            }
+            pen.circle(10.0, 10.0, 5.5, c);
+            pen.circle(10.0, 10.0, 2.2, a);
+        }
+        // Recover: a page with a turning arrow, a copy brought back.
+        "recover" => {
+            pen.page(2.5, 2.0, 12.5, 15.5);
+            pen.p.add(Shape::line(
+                (0..=14)
+                    .map(|i| {
+                        let t = -std::f32::consts::FRAC_PI_2 + 1.5 * std::f32::consts::PI * i as f32 / 14.0;
+                        pen.pt(13.5 + 4.0 * t.cos(), 13.5 + 4.0 * t.sin())
+                    })
+                    .collect(),
+                pen.stroke(a),
+            ));
+            pen.fill(&[(11.0, 9.5), (14.5, 7.3), (14.5, 11.7)], a);
+        }
 
         // Outlining tab: arrows moving a paragraph between outline levels and along the outline.
         "outlinePromote" | "outlineDemote" => {
@@ -1441,6 +1484,99 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             p.text(r.center(), egui::Align2::CENTER_CENTER, ch, FontId::proportional(r.height() * 0.45), a);
         }
     }
+}
+
+/// The Insert › Shapes menu's icons: each shape kind (`insert.shape` ids) as a small outline.
+fn shape(pen: &Pen, kind: &str) -> bool {
+    let (c, a) = (pen.c, pen.a);
+    let tint = a.linear_multiply(0.25);
+    let solid = |pts: &[(f32, f32)]| {
+        pen.fill(pts, tint);
+        pen.closed(pts, c);
+    };
+    let head = |tip: (f32, f32), from: (f32, f32)| {
+        let (dx, dy) = (tip.0 - from.0, tip.1 - from.1);
+        let len = (dx * dx + dy * dy).sqrt().max(0.01);
+        let (ux, uy) = (dx / len, dy / len);
+        let back = (tip.0 - ux * 4.5, tip.1 - uy * 4.5);
+        pen.fill(&[tip, (back.0 - uy * 2.5, back.1 + ux * 2.5), (back.0 + uy * 2.5, back.1 - ux * 2.5)], c);
+    };
+    let ends = |pts: &[(f32, f32)], arrow: bool| {
+        pen.line(pts);
+        if let Some(&first) = pts.first() {
+            pen.fcircle(first.0, first.1, 1.6, a);
+        }
+        if let [.., from, tip] = pts {
+            if arrow {
+                head(*tip, *from);
+            } else {
+                pen.fcircle(tip.0, tip.1, 1.6, a);
+            }
+        }
+    };
+    let curve = || -> Vec<(f32, f32)> {
+        let (p0, p1, p2, p3) = ((4.0, 15.0), (12.0, 15.0), (8.0, 5.0), (16.0, 5.0));
+        (0..=16)
+            .map(|i| {
+                let s = i as f32 / 16.0;
+                let m = 1.0 - s;
+                let w = [m * m * m, 3.0 * m * m * s, 3.0 * m * s * s, s * s * s];
+                (w[0] * p0.0 + w[1] * p1.0 + w[2] * p2.0 + w[3] * p3.0, w[0] * p0.1 + w[1] * p1.1 + w[2] * p2.1 + w[3] * p3.1)
+            })
+            .collect()
+    };
+    match kind {
+        "rectangle" => solid(&[(3.0, 5.0), (17.0, 5.0), (17.0, 15.0), (3.0, 15.0)]),
+        "roundedRectangle" => {
+            let r = Rect::from_min_max(pen.pt(3.0, 5.0), pen.pt(17.0, 15.0));
+            let radius = 3.0 * pen.s();
+            pen.p.rect_filled(r, radius, tint);
+            pen.p.rect_stroke(r, radius, pen.stroke(c), egui::StrokeKind::Middle);
+        }
+        "ellipse" => {
+            let (center, radius) = (pen.pt(10.0, 10.0), vec2(7.5, 5.5) * pen.s());
+            pen.p.add(Shape::ellipse_filled(center, radius, tint));
+            pen.p.add(Shape::ellipse_stroke(center, radius, pen.stroke(c)));
+        }
+        "triangle" => solid(&[(10.0, 3.5), (17.0, 16.5), (3.0, 16.5)]),
+        "diamond" => solid(&[(10.0, 3.0), (17.0, 10.0), (10.0, 17.0), (3.0, 10.0)]),
+        "line" => pen.line(&[(4.0, 16.0), (16.0, 4.0)]),
+        "arrow" => {
+            pen.line(&[(4.0, 16.0), (14.5, 5.5)]);
+            head((16.5, 3.5), (4.0, 16.0));
+        }
+        "star" => {
+            let pts: Vec<(f32, f32)> = (0..10)
+                .map(|i| {
+                    let ang = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    let rad = if i % 2 == 0 { 8.0 } else { 3.3 };
+                    (10.0 + rad * ang.cos(), 10.8 + rad * ang.sin())
+                })
+                .collect();
+            // Concave: the tinted core, then the outline.
+            pen.fill(&pts.iter().skip(1).step_by(2).copied().collect::<Vec<_>>(), tint);
+            pen.closed(&pts, c);
+        }
+        "heart" => {
+            let pts: Vec<(f32, f32)> = (0..32)
+                .map(|i| {
+                    let s = i as f32 / 32.0 * std::f32::consts::TAU;
+                    let x = 16.0 * s.sin().powi(3);
+                    let y = 13.0 * s.cos() - 5.0 * (2.0 * s).cos() - 2.0 * (3.0 * s).cos() - (4.0 * s).cos();
+                    (10.0 + x * 0.44, 9.6 - y * 0.44)
+                })
+                .collect();
+            pen.closed(&pts, c);
+        }
+        "straightConnector" => ends(&[(4.0, 15.0), (16.0, 5.0)], false),
+        "straightArrowConnector" => ends(&[(4.0, 15.0), (16.0, 5.0)], true),
+        "elbowConnector" => ends(&[(4.0, 15.0), (10.0, 15.0), (10.0, 5.0), (16.0, 5.0)], false),
+        "elbowArrowConnector" => ends(&[(4.0, 15.0), (10.0, 15.0), (10.0, 5.0), (16.0, 5.0)], true),
+        "curvedConnector" => ends(&curve(), false),
+        "curvedArrowConnector" => ends(&curve(), true),
+        _ => return false,
+    }
+    true
 }
 
 trait ThenLines {

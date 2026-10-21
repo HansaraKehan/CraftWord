@@ -287,12 +287,12 @@ pub fn code_page_byte(code_page: u16, b: u8) -> char {
 }
 
 /// The code page of an RTF or Word font charset (`\fcharset`): 204 Russian → 1251, 238 Eastern
-/// European → 1250, 77 Mac → 10000, 254 PC → 437… `None` for the ANSI and default charsets (the
+/// European → 1250, 77 Mac → 10000, 254 PC / 255 OEM → 437… `None` for the ANSI and default charsets (the
 /// document's code page applies), symbol fonts and the double-byte East Asian charsets.
 pub fn charset_code_page(charset: i32) -> Option<u16> {
     Some(match charset {
         77 => MAC_ROMAN_CODE_PAGE,
-        254 => 437,
+        254 | 255 => 437,
         161 => 1253,
         162 => 1254,
         163 => 1258,
@@ -323,6 +323,7 @@ mod tests {
         assert_eq!(decode(10000, &[0x80, 0x8E, 0xDB, 0xF1, 0xF2, 0xF3, 0xD2, 0xD3, 0x41]), "Äé€ÒÚÛ“”A");
         assert_eq!(charset_code_page(77), Some(10000));
         assert_eq!(charset_code_page(254), Some(437));
+        assert_eq!(charset_code_page(255), Some(437));
         assert_eq!(charset_code_page(204), Some(1251));
         assert_eq!(charset_code_page(0), None);
         for cp in SINGLE_BYTE_CODE_PAGES {

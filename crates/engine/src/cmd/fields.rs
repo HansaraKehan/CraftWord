@@ -188,11 +188,17 @@ fn shown_text(s: &mut Session, f: &FieldAt) -> String {
     };
     let l = s.layout();
     let page = l.caret(&f.at).and_then(|c| l.pages.get(c.page));
+    let section = page.map(|p| (p.section + 1) as u32).unwrap_or(1);
+    let section_pages = page
+        .map(|p| l.pages.iter().filter(|pg| pg.section == p.section).count() as u32)
+        .unwrap_or_else(|| u32::try_from(l.pages.len()).unwrap_or(u32::MAX));
+    let page_format = page.and_then(|p| s.doc.sections().get(p.section).map(|(_, sec)| sec.page_num_format)).unwrap_or_default();
     let ctx = wordcraft_layout::fields::FieldCtx {
         page: page.map(|p| p.number).unwrap_or(1),
+        page_format,
         pages: u32::try_from(l.pages.len()).unwrap_or(u32::MAX),
-        section_pages: u32::try_from(l.pages.len()).unwrap_or(u32::MAX),
-        section: 1,
+        section_pages,
+        section,
         title: s.doc.core.title.as_str().into(),
         author: s.doc.core.creator.as_str().into(),
         filename: s.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default().into(),
@@ -293,6 +299,30 @@ mod tests {
         out
     }
 
+    /// #1765: ASK and SET fields draw nothing on the page; their stored results are kept (and
+    /// saved), and code view still shows them.
+    #[test]
+    fn ask_and_set_fields_draw_nothing() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("insert.field", &json!({"instr": "ASK Nominativo \"Inserire nome\" \\d \"N\"", "result": "«NOME» «COGNOME»"})).unwrap();
+        s.run("insert.field", &json!({"instr": "SET Codice \"COD\"", "result": "COD"})).unwrap();
+        s.run("text.insert", &json!({"text": "Title"})).unwrap();
+        let shown = page_text(&mut s);
+        assert!(!shown.contains("NOME") && !shown.contains("COD"), "{shown}");
+        let para = s.doc.para(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap();
+        let results: Vec<&str> = para
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                InlineObject::Field { result, .. } => Some(result.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, ["«NOME» «COGNOME»", "COD"]);
+        s.run("view.fieldCodes", &json!({})).unwrap();
+        assert!(page_text(&mut s).contains("{ SET Codice \"COD\" }"));
+    }
+
     /// Alt+F9 shows every field's code in braces; Shift+F9 flips just the selected one; F9 shows
     /// its result again.
     #[test]
@@ -383,5 +413,21 @@ mod tests {
         // Nothing selected: an error, not a no-op undo step.
         s.run("caret.docStart", &json!({})).unwrap();
         assert!(s.run("fields.lock", &json!({})).is_err());
+    }
+
+    #[test]
+    fn unlink_uses_section_context() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        // Insert section break so there are 2 sections
+        s.run("layout.break", &json!({"kind": "nextPage"})).unwrap();
+        // In section 2: insert SECTION and SECTIONPAGES fields
+        s.run("insert.field", &json!({"instr": "SECTION"})).unwrap();
+        s.run("text.insert", &json!({"text": " of "})).unwrap();
+        s.run("insert.field", &json!({"instr": "SECTIONPAGES"})).unwrap();
+        // Select both and unlink
+        s.run("select.all", &json!({})).unwrap();
+        s.run("fields.unlink", &json!({})).unwrap();
+        let text = s.doc.plain_text(wordcraft_doc::StoryRef::Body);
+        assert!(text.contains("2 of 1"), "unlinked text should reflect section 2: {text}");
     }
 }

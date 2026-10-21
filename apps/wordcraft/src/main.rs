@@ -16,7 +16,7 @@ mod clipboard;
 mod control_server;
 mod default_apps;
 mod file_dialogs;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 mod graphics;
 mod logging;
 mod print;
@@ -389,6 +389,9 @@ fn main() -> eframe::Result {
     // FXC, which needs no DLL of ours (#603; see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
+    // Intel Macs: Metal's compiler aborts on wgpu's indirect-validation shaders (#2652).
+    #[cfg(target_os = "macos")]
+    graphics::configure_indirect_validation(&mut options, graphics::skips_indirect_validation(true, cfg!(target_arch = "x86_64")));
     load_user_fonts();
     let restored = saved_window();
     if let Some(window) = restored {

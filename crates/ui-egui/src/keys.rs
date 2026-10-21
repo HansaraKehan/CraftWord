@@ -200,6 +200,20 @@ fn is_paste_release(key: Key, modifiers: egui::Modifiers) -> bool {
     (modifiers.command || key == Key::Paste) && !modifiers.alt && !modifiers.shift
 }
 
+/// The modifiers a V release stands for: its own, or, when Mod went up before V and no V press
+/// came (egui-winit keeps Mod+V presses), those held with Mod.
+fn paste_release_modifiers(released: Modifiers, press_seen: bool, held: Option<Modifiers>) -> Modifiers {
+    if released.command || press_seen { released } else { held.unwrap_or(released) }
+}
+
+/// Whether `key` is a Shift, Ctrl, Alt or Super key, whose own presses don't end a Mod+V.
+fn is_modifier_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ShiftLeft | Key::ShiftRight | Key::ControlLeft | Key::ControlRight | Key::AltLeft | Key::AltRight | Key::SuperLeft | Key::SuperRight
+    )
+}
+
 /// Whether releasing `key` with `modifiers` is Mod+Alt+V (Paste Special).
 fn is_paste_special_release(key: Key, modifiers: egui::Modifiers) -> bool {
     key == Key::V && modifiers.command && modifiers.alt && !modifiers.shift
@@ -239,12 +253,34 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
         return;
     }
     let alt_codes = alt_codes_supported(ctx);
+    // `DeleteSurrounding` and the text replacing what it erased arrive in the same frame.
+    app.canvas.ime_join_text = None;
+    // Mod held since an earlier frame (its ModifiersChanged went by then).
+    let held = ctx.input(|i| i.modifiers);
+    if held.command {
+        app.canvas.paste_mods = Some(held);
+    }
     for e in events {
+        // Which presses reached the canvas, and the modifiers held with Mod, in event order: Mod
+        // can go down and up within one frame, leaving the frame's modifiers without it.
+        match &e {
+            egui::Event::ModifiersChanged(m) if m.command => app.canvas.paste_mods = Some(*m),
+            egui::Event::Key { key: Key::V | Key::Paste, pressed: true, .. } => app.canvas.v_pressed = true,
+            egui::Event::Key { key, pressed: true, modifiers, .. } if !is_modifier_key(*key) => {
+                app.canvas.paste_mods = modifiers.command.then_some(*modifiers);
+            }
+            egui::Event::WindowFocused(_) => {
+                app.canvas.v_pressed = false;
+                app.canvas.paste_mods = None;
+            }
+            _ => {}
+        }
         // An Alt shortcut (Alt+Shift+D, Alt+F7…) may also send its key's text; it isn't typed.
         match &e {
             egui::Event::Key { pressed: true, .. } => {
                 app.canvas.swallow_text = false;
                 app.canvas.alt_code_echo = None;
+                app.canvas.ime_join_text = None;
             }
             egui::Event::Text(_) if std::mem::take(&mut app.canvas.swallow_text) => continue,
             egui::Event::Text(t) => {
@@ -270,8 +306,11 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
         }
         // Desktop: Mod+V with no text on the clipboard sends no paste event, only the key's
         // release; paste the clipboard's picture then (#45). A paste event before the release
-        // means it was text. (The web reads pasted pictures itself.)
+        // means it was text. (The web reads pasted pictures itself.) Mod released before V still
+        // pastes: a release with no V press seen was Mod+V.
         if let egui::Event::Key { key: key @ (Key::V | Key::Paste), pressed: false, modifiers, .. } = &e {
+            let press_seen = std::mem::take(&mut app.canvas.v_pressed);
+            let modifiers = &paste_release_modifiers(*modifiers, press_seen, app.canvas.paste_mods.take());
             let paste_keys = is_paste_release(*key, *modifiers);
             let pasted = std::mem::take(&mut app.canvas.pasted);
             if !pasted && paste_keys && app.session.math.is_none() && app.services.clipboard_picture.is_some() {
@@ -316,16 +355,20 @@ pub fn canvas_events(app: &mut WordApp, ctx: &egui::Context) {
                     continue;
                 }
                 if t.chars().all(|c| !c.is_control()) && !t.is_empty() {
+                    if crate::dialogs_smart_art::type_into(app, &t) {
+                        continue;
+                    }
                     // Typing with a text box selected types into it.
                     crate::objects::enter_text_box(app);
-                    let _ = app.run("text.insert", json!({"text": t}));
+                    type_text(app, &t);
                 }
             }
+            egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => delete_surrounding(app, before_chars, after_chars),
             egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => app.canvas.ime_preedit = text,
             egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
                 app.canvas.ime_preedit.clear();
-                if !text.is_empty() {
-                    let _ = app.run("text.insert", json!({"text": text}));
+                if !text.is_empty() && !crate::dialogs_smart_art::type_into(app, &text) {
+                    type_text(app, &text);
                 }
             }
             egui::Event::Paste(t) => {
@@ -534,6 +577,77 @@ fn finish_alt_code(app: &mut WordApp) {
     }
 }
 
+/// Typed text (a key's text or an input method's commit). Text replacing what an input method's
+/// `DeleteSurrounding` just erased takes the erased text's formatting, never overtypes what
+/// follows, and stays in the typing undo group (#1480).
+fn type_text(app: &mut WordApp, text: &str) {
+    if let Some(props) = app.canvas.ime_join_text.take() {
+        app.session.join_next_undo();
+        app.session.pending = Some(props);
+        let overtype = std::mem::replace(&mut app.session.prefs.overtype, false);
+        let typed = app.run("text.insert", json!({"text": text})).is_ok();
+        app.session.prefs.overtype = overtype;
+        if typed {
+            app.session.continue_typing();
+        }
+    } else {
+        let _ = app.run("text.insert", json!({"text": text}));
+    }
+    note_automatic_change(app);
+}
+
+/// AutoCorrect or AutoFormat just changed the text around the caret (its own undo step, which
+/// closes the typing group). The web's text agent still holds the text as typed and counts its
+/// `DeleteSurrounding` from that, so it is asked to start afresh (`canvas::ime_reset`).
+fn note_automatic_change(app: &mut WordApp) {
+    if !app.session.typing_open() && app.session.undo_label() == Some("AutoFormat") {
+        app.canvas.ime_reset = true;
+    }
+}
+
+/// An input method's `DeleteSurrounding`: erase `before` characters (Unicode scalar values, as
+/// the input method counts them) before the caret and `after` after it, as Backspace does over a
+/// selection. The web build's text agent (eframe's hidden `<input>`) sends it, then the new
+/// text, whenever its value changes other than by an addition at its end (#1480): Backspace
+/// and corrections from phone keyboards, and Chrome's caret jump. The desktop builds never get
+/// it (egui-winit 0.36 doesn't send it). The counts come from outside: they stop at the
+/// paragraph's ends, so a paragraph mark or list number is never erased. The erasure joins an
+/// open typing group and the text that follows joins it too ([`type_text`]), so one Undo takes
+/// back the typing with its correction.
+/// With a selection (the agent starts afresh on any click or editing key, so it doesn't send
+/// one then) nothing is erased: the text that follows replaces the selection as typing does.
+/// Nor inside an equation, whose text the agent's characters went to.
+fn delete_surrounding(app: &mut WordApp, before: usize, after: usize) {
+    let s = &app.session;
+    // Inside an equation the document's text isn't what the input method typed into.
+    if !s.sel.is_collapsed() || s.math.is_some() {
+        return;
+    }
+    let f = s.sel.focus.clone();
+    let Some(text) = s.doc.para_at(&f).map(|p| p.text.as_str()) else { return };
+    let (Some(head), Some(tail)) = (text.get(..f.off), text.get(f.off..)) else { return };
+    let start = f.off.saturating_sub(head.chars().rev().take(before).map(char::len_utf8).sum::<usize>());
+    let end = f.off.saturating_add(tail.chars().take(after).map(char::len_utf8).sum::<usize>());
+    if start == end {
+        return;
+    }
+    let join = s.typing_open();
+    // The formatting typing at the caret would use: that of the erased text (or set for it).
+    let props = s.typing_props();
+    app.session.sel =
+        wordcraft_engine::Selection { anchor: wordcraft_doc::Pos { off: start, ..f.clone() }, focus: wordcraft_doc::Pos { off: end, ..f.clone() } };
+    let caret = f;
+    if join {
+        app.session.join_next_undo();
+    }
+    if app.run("text.backspace", json!({})).is_ok() {
+        app.canvas.ime_join_text = Some(props);
+    } else {
+        // Refused (a protected document): leave the caret where it was.
+        app.session.sel = wordcraft_engine::Selection::caret(caret);
+    }
+}
+
 /// Text arriving right after an Alt code typed `echo` (no key pressed between): whether it was
 /// the platform's composed character and is handled. The same character isn't typed twice. On
 /// Windows the text is always the composed character: for a code up to 255 it replaces ours (the
@@ -633,6 +747,99 @@ mod tests {
         assert!(!is_paste_special_release(Key::V, m(true, true, true)) && !is_paste_special_release(Key::V, m(true, false, false)));
     }
 
+    /// An empty document whose clipboard holds a 4 × 4 picture.
+    fn picture_app() -> WordApp {
+        use crate::paste_picture::ClipboardPicture;
+        let services = crate::Services {
+            clipboard_picture: Some(Box::new(|| Some(ClipboardPicture::Pixels { width: 4, height: 4, rgba: vec![200; 4 * 4 * 4] }))),
+            ..Default::default()
+        };
+        WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), services)
+    }
+
+    /// How many pictures the document holds (the Selection Pane's list).
+    fn pictures(a: &mut WordApp) -> usize {
+        a.session.run("arrange.selectionPane", &json!({})).unwrap().as_array().map(|x| x.len()).unwrap_or(0)
+    }
+
+    /// One canvas frame with `modifiers` held, then `events`.
+    fn mods_frame(ctx: &egui::Context, a: &mut WordApp, modifiers: Modifiers, events: Vec<egui::Event>) {
+        let events = std::iter::once(egui::Event::ModifiersChanged(modifiers)).chain(events).collect();
+        ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| canvas_events(a, ui.ctx())).drop_without_applying_deltas();
+    }
+
+    /// A press or release of `key` with `modifiers`.
+    fn key_event(key: Key, pressed: bool, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers }
+    }
+
+    /// Left Ctrl+V with one hand often lets Ctrl up a moment before V. egui-winit keeps the
+    /// Mod+V press, so the canvas sees only Ctrl's release, then V's without Mod: still a paste.
+    #[test]
+    fn mod_v_released_mod_first_pastes_the_clipboard_picture() {
+        let ctx = egui::Context::default();
+        let mut a = picture_app();
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        mods_frame(&ctx, &mut a, ctrl, vec![key_event(Key::ControlLeft, true, ctrl)]);
+        // The Mod+V press: egui-winit sends no event for it.
+        mods_frame(&ctx, &mut a, ctrl, vec![]);
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::ControlLeft, false, Modifiers::NONE)]);
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::V, false, Modifiers::NONE)]);
+        assert_eq!(pictures(&mut a), 1);
+
+        // A plain V afterwards (its press arrives) isn't a paste.
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::V, true, Modifiers::NONE)]);
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::V, false, Modifiers::NONE)]);
+        assert_eq!(pictures(&mut a), 1);
+
+        // Nor is Ctrl+B, Ctrl up, then a V release whose press never came (focus moved in).
+        mods_frame(&ctx, &mut a, ctrl, vec![key_event(Key::B, true, ctrl)]);
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::ControlLeft, false, Modifiers::NONE), egui::Event::WindowFocused(true)]);
+        mods_frame(&ctx, &mut a, Modifiers::NONE, vec![key_event(Key::V, false, Modifiers::NONE)]);
+        assert_eq!(pictures(&mut a), 1);
+
+        // Mod+Shift+V released Mod first stays Paste Formatting, not a picture paste.
+        let ctrl_shift = Modifiers { shift: true, ..ctrl };
+        mods_frame(&ctx, &mut a, ctrl_shift, vec![]);
+        mods_frame(&ctx, &mut a, Modifiers::SHIFT, vec![key_event(Key::ControlLeft, false, Modifiers::SHIFT)]);
+        mods_frame(&ctx, &mut a, Modifiers::SHIFT, vec![key_event(Key::V, false, Modifiers::SHIFT)]);
+        assert_eq!(pictures(&mut a), 1);
+
+        // Released V first, as before, still pastes.
+        let mut a = picture_app();
+        mods_frame(&ctx, &mut a, ctrl, vec![]);
+        mods_frame(&ctx, &mut a, ctrl, vec![key_event(Key::V, false, ctrl)]);
+        assert_eq!(pictures(&mut a), 1);
+    }
+
+    /// Ctrl down, the kept Mod+V press, Ctrl up and V up can all arrive in one frame: the frame's
+    /// modifiers no longer have Mod, but the ModifiersChanged events in between did.
+    #[test]
+    fn mod_v_within_one_frame_pastes_the_clipboard_picture() {
+        let ctx = egui::Context::default();
+        let mut a = picture_app();
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        let events = vec![
+            egui::Event::ModifiersChanged(ctrl),
+            key_event(Key::ControlLeft, true, ctrl),
+            egui::Event::ModifiersChanged(Modifiers::NONE),
+            key_event(Key::ControlLeft, false, Modifiers::NONE),
+            key_event(Key::V, false, Modifiers::NONE),
+        ];
+        ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| canvas_events(&mut a, ui.ctx())).drop_without_applying_deltas();
+        assert_eq!(pictures(&mut a), 1);
+    }
+
+    /// A V release keeps its own modifiers unless Mod went up first and no V press arrived.
+    #[test]
+    fn paste_release_modifiers_fall_back_to_those_held_with_mod() {
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        assert_eq!(paste_release_modifiers(ctrl, false, None), ctrl, "Mod still down");
+        assert_eq!(paste_release_modifiers(Modifiers::NONE, false, Some(ctrl)), ctrl, "Mod up first, press kept by egui-winit");
+        assert_eq!(paste_release_modifiers(Modifiers::NONE, true, Some(ctrl)), Modifiers::NONE, "a plain V's press arrived");
+        assert_eq!(paste_release_modifiers(Modifiers::NONE, false, None), Modifiers::NONE);
+    }
+
     #[test]
     fn shift_delete_is_only_shift_and_delete() {
         let m = |shift, ctrl, alt| egui::Modifiers { shift, ctrl, command: ctrl, alt, ..Default::default() };
@@ -663,8 +870,9 @@ mod tests {
         assert!(!is_global_shortcut(Key::Q, m(false, false, true)), "Shift+letter is typing");
     }
 
-    /// Alt held, keypad 0 2 3 3, Alt released: é is typed, the digits aren't, and keytips stay
-    /// off (#961). Linux sends each digit's text too; Windows may send the composed character.
+    /// Alt held, keypad 0 2 3 3, Alt released: é (й on a Russian system) is typed, the digits
+    /// aren't, and keytips stay off (#961). Linux sends each digit's text too; Windows may send the
+    /// composed character.
     #[test]
     fn alt_numpad_code_types_its_character_without_keytips() {
         if cfg!(target_os = "macos") {
@@ -673,6 +881,15 @@ mod tests {
         let doc_text = |a: &WordApp| a.session.doc.plain_text(wordcraft_doc::StoryRef::Body);
         let ctx = egui::Context::default();
         let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        // Windows reads codes in the system locale's code pages (0233 is é in 1252 and 1250, й in
+        // 1251); elsewhere the ANSI page is 1252 and the OEM page the locale's own. The app records
+        // the locale when it starts, so ask after `WordApp::new`.
+        let (ansi, oem_page) = if cfg!(target_os = "windows") {
+            wordcraft_engine::cmd::text::system_code_pages()
+        } else {
+            (1252, wordcraft_engine::cmd::text::system_oem_code_page())
+        };
+        let typed = wordcraft_engine::cmd::text::alt_code_char("0233", ansi, oem_page).unwrap_or('?');
         let alt = Modifiers { alt: true, ..Default::default() };
         let key = |key, pressed, modifiers| egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers };
         let frame = |a: &mut WordApp, events: Vec<egui::Event>| {
@@ -688,25 +905,20 @@ mod tests {
         }
         assert_eq!(doc_text(&a).trim_end(), "", "nothing typed while Alt is held");
         frame(&mut a, vec![key(Key::AltLeft, false, alt), egui::Event::ModifiersChanged(Modifiers::NONE)]);
-        assert_eq!(doc_text(&a).trim_end(), "é");
+        assert_eq!(doc_text(&a).trim_end(), typed.to_string());
         assert_eq!(a.ui.keytips, crate::keytips::Phase::Off, "an Alt code doesn't open keytips");
         // The platform's own composed character isn't typed twice; the next typing is.
-        frame(&mut a, vec![egui::Event::Text("é".into())]);
+        frame(&mut a, vec![egui::Event::Text(typed.to_string())]);
         frame(&mut a, vec![key(Key::E, true, Modifiers::NONE), egui::Event::Text("é".into())]);
-        assert_eq!(doc_text(&a).trim_end(), "éé");
+        assert_eq!(doc_text(&a).trim_end(), format!("{typed}é"));
         // Without the leading zero: the system locale's OEM code page (233 is Θ in 437, Ú in 850).
         frame(&mut a, vec![egui::Event::ModifiersChanged(alt), key(Key::AltLeft, true, alt)]);
         for k in [Key::Num2, Key::Num3, Key::Num3] {
             frame(&mut a, vec![key(k, true, alt), key(k, false, alt)]);
         }
         frame(&mut a, vec![key(Key::AltLeft, false, alt), egui::Event::ModifiersChanged(Modifiers::NONE)]);
-        let pages = wordcraft_engine::cmd::text::system_code_pages();
-        let oem = wordcraft_engine::cmd::text::alt_code_char(
-            "233",
-            1252,
-            if cfg!(target_os = "windows") { pages.1 } else { wordcraft_engine::cmd::text::system_oem_code_page() },
-        );
-        assert_eq!(doc_text(&a).trim_end(), format!("éé{}", oem.unwrap_or('?')));
+        let oem = wordcraft_engine::cmd::text::alt_code_char("233", ansi, oem_page);
+        assert_eq!(doc_text(&a).trim_end(), format!("{typed}é{}", oem.unwrap_or('?')));
         // A bare Alt tap still opens keytips.
         frame(&mut a, vec![egui::Event::ModifiersChanged(alt), key(Key::AltLeft, true, alt)]);
         frame(&mut a, vec![key(Key::AltLeft, false, alt), egui::Event::ModifiersChanged(Modifiers::NONE)]);
@@ -773,5 +985,162 @@ mod tests {
         a.canvas.alt_code_echo = Some(AltCodeEcho { typed: "€".into(), system_composes: false, byte_code: false });
         alt_frame(&ctx, &mut a, vec![egui::Event::Text("x".into())]);
         assert_eq!(text(&a), "ą€x");
+    }
+
+    fn body(a: &WordApp) -> String {
+        a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).trim_end_matches(['\r', '\n']).to_string()
+    }
+
+    fn surround(before_chars: usize, after_chars: usize) -> egui::Event {
+        egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars })
+    }
+
+    /// The web's text agent keeps what it typed and, when its value changes other than by an
+    /// addition at the end, sends `DeleteSurrounding` for the changed tail and then the new text
+    /// (#1480). The document follows the agent's value instead of repeating it.
+    #[test]
+    fn delete_surrounding_from_the_web_text_agent_does_not_repeat_text() {
+        let (ctx, mut a) = alt_frame_app();
+        // The trace from #1480: the agent's caret jumped to 0 after `м`, so it reported `иabм`
+        // and `риabм` as its whole new tail.
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("a".into())]);
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("b".into())]);
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("м".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(3, 0), egui::Event::Text("иabм".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(4, 0), egui::Event::Text("риabм".into())]);
+        assert_eq!(body(&a), "риabм");
+        // A correction (`teh` -> `the`): erase three characters, type the replacement.
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text(" teh".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(3, 0), egui::Event::Text("the".into())]);
+        assert_eq!(body(&a), "риabм the");
+        // A plain deletion (Android Backspace): no text follows, or an empty one.
+        alt_frame(&ctx, &mut a, vec![surround(1, 0), egui::Event::Text(String::new())]);
+        assert_eq!(body(&a), "риabм th");
+        alt_frame(&ctx, &mut a, vec![surround(2, 0)]);
+        assert_eq!(body(&a), "риabм ");
+    }
+
+    /// `after_chars` erases after the caret; both counts are characters, not bytes.
+    #[test]
+    fn delete_surrounding_erases_characters_on_both_sides_of_the_caret() {
+        let (ctx, mut a) = alt_frame_app();
+        a.run("text.insert", json!({"text": "мир дом"})).unwrap();
+        for _ in 0..3 {
+            a.run("caret.left", json!({})).unwrap();
+        }
+        // The caret is after `мир `: two before (`р `) and one after (`д`).
+        alt_frame(&ctx, &mut a, vec![surround(2, 1)]);
+        assert_eq!(body(&a), "миом");
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("X".into())]);
+        assert_eq!(body(&a), "миXом", "the caret stays where the deletion was");
+    }
+
+    /// The counts come from outside: larger than the paragraph they stop at its ends, never
+    /// joining paragraphs or panicking.
+    #[test]
+    fn delete_surrounding_stays_inside_the_paragraph() {
+        let (ctx, mut a) = alt_frame_app();
+        a.run("document.setText", json!({"text": "one\ntwo\nthree"})).unwrap();
+        a.run("caret.docStart", json!({})).unwrap();
+        // After the `t` of `two`.
+        for _ in 0..5 {
+            a.run("caret.right", json!({})).unwrap();
+        }
+        alt_frame(&ctx, &mut a, vec![surround(usize::MAX, usize::MAX)]);
+        assert_eq!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).trim_end(), "one\n\nthree");
+        alt_frame(&ctx, &mut a, vec![surround(5, 5), egui::Event::Text("2".into())]);
+        assert_eq!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).trim_end(), "one\n2\nthree");
+    }
+
+    /// The agent's rewrite belongs to the typing it corrects: one Undo takes back the typing
+    /// and its correction together, not a half-erased word.
+    #[test]
+    fn delete_surrounding_joins_the_typing_undo_step() {
+        let (ctx, mut a) = alt_frame_app();
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("teh".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(3, 0), egui::Event::Text("the".into())]);
+        assert_eq!(body(&a), "the");
+        // Typing goes on in the same group, not one step per keystroke.
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text(" more".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(4, 0), egui::Event::Text("mores".into())]);
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("t".into())]);
+        assert_eq!(body(&a), "the morest");
+        assert_eq!(a.session.undo_label(), Some("Typing"));
+        a.run("edit.undo", json!({})).unwrap();
+        assert_eq!(body(&a), "");
+    }
+
+    /// The rewritten text keeps the formatting of the text it replaces: a bold `helo` corrected
+    /// to `hello` stays bold, as typing over a word does.
+    #[test]
+    fn delete_surrounding_keeps_the_replaced_texts_formatting() {
+        let (ctx, mut a) = alt_frame_app();
+        a.run("text.insert", json!({"text": "plain "})).unwrap();
+        a.run("format.bold", json!({})).unwrap();
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("helo".into())]);
+        alt_frame(&ctx, &mut a, vec![surround(4, 0), egui::Event::Text("hello".into())]);
+        assert_eq!(body(&a), "plain hello");
+        let f = a.session.sel.focus.clone();
+        let para = a.session.doc.para_at(&f).expect("a paragraph");
+        let bold: Vec<bool> = para.text.char_indices().map(|(i, _)| para.props_of_char(i).bold == Some(true)).collect();
+        assert_eq!(bold, [false, false, false, false, false, false, true, true, true, true, true], "{bold:?}");
+    }
+
+    /// Overtype replaces characters after the caret when typing, but the text an input method
+    /// sends to replace what it erased only replaces that.
+    #[test]
+    fn delete_surrounding_text_does_not_overtype() {
+        let (ctx, mut a) = alt_frame_app();
+        a.run("text.insert", json!({"text": "texXY"})).unwrap();
+        for _ in 0..2 {
+            a.run("caret.left", json!({})).unwrap();
+        }
+        a.run("file.options", json!({"overtype": true})).unwrap();
+        alt_frame(&ctx, &mut a, vec![surround(3, 0), egui::Event::Text("Texas".into())]);
+        assert_eq!(body(&a), "TexasXY");
+    }
+
+    /// A key pressed between the erasure and the text ends the input method's rewrite: the text
+    /// is ordinary typing, its own undo step.
+    #[test]
+    fn delete_surrounding_rewrite_ends_at_a_key_press() {
+        let (ctx, mut a) = alt_frame_app();
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("ab".into())]);
+        let key = egui::Event::Key { key: Key::F20, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        alt_frame(&ctx, &mut a, vec![surround(1, 0), key, egui::Event::Text("X".into())]);
+        assert_eq!(body(&a), "aX");
+        a.run("edit.undo", json!({})).unwrap();
+        assert_eq!(body(&a), "a");
+    }
+
+    /// An automatic change while typing (AutoCorrect `(c)` -> `©`) changes the text behind the
+    /// web's text agent, so its later counts would be wrong: the page asks it to start afresh.
+    #[test]
+    fn automatic_change_asks_the_input_method_to_start_afresh() {
+        let (ctx, mut a) = alt_frame_app();
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("Word".into())]);
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text(" ".into())]);
+        assert!(!a.canvas.ime_reset, "plain typing keeps the agent's text");
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text("(c)".into())]);
+        alt_frame(&ctx, &mut a, vec![egui::Event::Text(" ".into())]);
+        assert_eq!(body(&a), "Word \u{a9} ");
+        assert!(a.canvas.ime_reset, "AutoCorrect changed the text");
+    }
+
+    #[test]
+    fn typing_with_smart_art_selected_types_into_an_item() {
+        let ctx = egui::Context::default();
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        a.run("insert.smartArt", json!({"layout": "matrix", "items": ["Ada", "Bea"]})).unwrap();
+        for t in ["x", "y"] {
+            ctx.run_ui(egui::RawInput { events: vec![egui::Event::Text(t.into())], ..Default::default() }, |ui| canvas_events(&mut a, ui.ctx()))
+                .drop_without_applying_deltas();
+        }
+        let g = wordcraft_engine::cmd::smart_art::selected_smart_art(&a.session).expect("the graphic stays");
+        assert_eq!(g.items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["Adaxy", "Bea"]);
+        assert!(a.session.view.smart_art_pane, "the Text Pane opens");
+        a.run("edit.undo", json!({})).unwrap();
+        let g = wordcraft_engine::cmd::smart_art::selected_smart_art(&a.session).expect("still there");
+        assert_eq!(g.items[0].text, "Ada", "one undo step for the typing");
     }
 }

@@ -2,6 +2,8 @@
 //! Accessibility and Alt Text (see `a11y_pane`), Restrict Editing ([`crate::dialogs_review`]), Comments,
 //! and the SmartArt Text Pane.
 
+use std::collections::BTreeMap;
+
 use egui::{Stroke, Ui, vec2};
 use serde_json::{Value, json};
 use wordcraft_doc::{Pos, StoryRef};
@@ -127,6 +129,7 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
         out.state.store(ui.ctx(), r.id);
     }
     if r.changed() || picked.is_some() {
+        app.ui.nav_tab = "results".into();
         ui.data_mut(|d| d.insert_temp(qid, q.clone()));
         if !q.is_empty() {
             let _ = app.session.run("edit.find", &json!({"text": q}));
@@ -213,18 +216,20 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
 }
 
 /// Constrain each heading to the available pane width so long document text cannot
-/// enlarge the panel. The full heading stays accessible on hover.
+/// enlarge the panel. A heading too long for the width wraps onto further lines — a word
+/// wider than the pane is broken too — and the row grows with it, so the label reads whole
+/// instead of ending in an ellipsis (#3015).
 fn nav_heading(ui: &mut Ui, level: u8, text: &str, selected: bool) -> egui::Response {
     ui.horizontal(|ui| {
         ui.add_space(level as f32 * 14.0);
         let label = egui::RichText::new(text).font(if level == 0 { semibold(12.5) } else { regular(12.5) });
-        ui.add_sized(
-            vec2(ui.available_width(), ui.spacing().interact_size.y),
+        let width = ui.available_width();
+        ui.add(
             // The trailing grow atom takes the spare width, so the text starts flush left
-            // under its parent instead of centred, as in Word (#1199).
-            egui::Button::selectable(selected, (label, egui::Atom::grow())).truncate(),
+            // under its parent instead of centred, as in Word (#1199). A minimum height
+            // keeps short headings on one row; a wrapped one becomes as tall as it needs.
+            egui::Button::selectable(selected, (label, egui::Atom::grow())).wrap().min_size(vec2(width, ui.spacing().interact_size.y)),
         )
-        .on_hover_text(text)
     })
     .inner
 }
@@ -243,6 +248,7 @@ fn clipboard(app: &mut WordApp, ui: &mut Ui) {
         }
         if ui.add_enabled(!items.is_empty(), egui::Button::new(tl!("Clear All"))).clicked() {
             let _ = app.run("edit.clearClipboard", json!({}));
+            app.canvas.want_focus = true;
         }
     });
     ui.add_space(4.0);
@@ -266,6 +272,7 @@ fn clipboard(app: &mut WordApp, ui: &mut Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                     if ui.small_button(tl!("Delete")).clicked() {
                         let _ = app.run("edit.deleteClipboardItem", json!({"index": i}));
+                        app.canvas.want_focus = true;
                     }
                 });
             });
@@ -307,18 +314,18 @@ fn styles(app: &mut WordApp, ui: &mut Ui) {
         let _ = app.run("styles.inspector", json!({}));
     }
     ui.separator();
-    let mut list: Vec<(String, String, bool)> = app
+    let mut list: Vec<(String, String, bool, bool)> = app
         .session
         .doc
         .styles
         .styles
         .iter()
         .filter(|s| !s.hidden && s.kind != wordcraft_doc::StyleKind::Table)
-        .map(|s| (s.id.clone(), crate::i18n::style_name(s), s.kind == wordcraft_doc::StyleKind::Character))
+        .map(|s| (s.id.clone(), crate::i18n::style_name(s), s.kind == wordcraft_doc::StyleKind::Character, s.builtin))
         .collect();
     list.sort_by_key(|s| s.1.to_lowercase());
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (id, name, is_char) in list {
+        for (id, name, is_char, builtin) in list {
             ui.horizontal(|ui| {
                 let r = ui.selectable_label(id == cur, &name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -335,10 +342,12 @@ fn styles(app: &mut WordApp, ui: &mut Ui) {
                     }
                     if ui.button(tl!("Update to Match Selection")).clicked() {
                         let _ = app.run("styles.updateToMatch", json!({"style": id}));
+                        app.canvas.want_focus = true;
                         ui.close();
                     }
-                    if ui.button(tl!("Delete")).clicked() {
+                    if ui.add_enabled(!builtin, egui::Button::new(tl!("Delete"))).clicked() {
                         let _ = app.run("styles.delete", json!({"style": id}));
+                        app.canvas.want_focus = true;
                         ui.close();
                     }
                 });
@@ -409,12 +418,46 @@ fn comments(app: &mut WordApp, ui: &mut Ui) {
     });
 }
 
-fn edit_key(id: u32) -> egui::Id {
-    egui::Id::new(("comment_edit", id))
+/// What has been typed in comment and reply fields but not yet written to the document (#1348).
+/// Drafts belong to one document ([`Session::document_id`](wordcraft_engine::Session::document_id)):
+/// when another document replaces it they are dropped, so a comment there with the same id never
+/// shows them. A draft is removed only once its command succeeds; a refused edit keeps it.
+#[derive(Default)]
+pub(crate) struct CommentDrafts {
+    document: u64,
+    edits: BTreeMap<u32, String>,
+    replies: BTreeMap<u32, String>,
 }
 
-fn reply_key(id: u32) -> egui::Id {
-    egui::Id::new(("comment_reply", id))
+impl CommentDrafts {
+    /// The drafts for `document`, dropping any left from another one.
+    fn of(&mut self, document: u64) -> &mut Self {
+        if self.document != document {
+            self.edits.clear();
+            self.replies.clear();
+            self.document = document;
+        }
+        self
+    }
+}
+
+/// The pending draft of comment `id`'s text in the open document, if any.
+#[cfg(test)]
+pub(crate) fn comment_draft(app: &WordApp, id: u32) -> Option<String> {
+    let d = &app.comment_drafts;
+    if d.document == app.session.document_id() { d.edits.get(&id).cloned() } else { None }
+}
+
+/// Whether the open document has a comment or reply draft not yet written to it (typed, or
+/// kept after the document refused it): closing the page would lose it.
+pub(crate) fn has_comment_drafts(app: &WordApp) -> bool {
+    let d = &app.comment_drafts;
+    d.document == app.session.document_id() && !(d.edits.is_empty() && d.replies.is_empty())
+}
+
+fn drafts(app: &mut WordApp) -> &mut CommentDrafts {
+    let document = app.session.document_id();
+    app.comment_drafts.of(document)
 }
 
 /// A comment's text, editable in place (the Comments pane and the balloons). Typing stays in a
@@ -422,9 +465,16 @@ fn reply_key(id: u32) -> egui::Id {
 /// `review.editComment`, so each editing session is one undo step.
 pub(crate) fn comment_editor(app: &mut WordApp, ui: &mut Ui, id: u32, font: Option<egui::FontId>, focus: bool) {
     let Some(part) = app.session.doc.comments.get(&id).map(|c| c.part) else { return };
-    let key = edit_key(id);
-    let mut text = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| app.session.doc.plain_text(StoryRef::Part(part)));
-    let mut edit = egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY).hint_text(tl!("Add a comment"));
+    let draft = drafts(app).edits.get(&id).cloned();
+    let mut text = draft.unwrap_or_else(|| app.session.doc.plain_text(StoryRef::Part(part)));
+    // Read-only where comments can't change (a protected document), so nothing is typed in vain.
+    let editable = crate::widgets::enabled(app, "review.editComment");
+    let mut edit = egui::TextEdit::multiline(&mut text)
+        .id(field_id(app, ui, "comment_edit", id))
+        .interactive(editable)
+        .desired_rows(1)
+        .desired_width(f32::INFINITY)
+        .hint_text(tl!("Add a comment"));
     if let Some(f) = font {
         edit = edit.font(f);
     }
@@ -433,20 +483,36 @@ pub(crate) fn comment_editor(app: &mut WordApp, ui: &mut Ui, id: u32, font: Opti
         r.request_focus();
     }
     if r.changed() {
-        ui.data_mut(|d| d.insert_temp(key, text));
+        drafts(app).edits.insert(id, text);
     }
     if r.lost_focus() {
-        commit_comment(app, ui.ctx(), id);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Escape throws the draft away: the field shows the comment's text again.
+            drafts(app).edits.remove(&id);
+        } else {
+            // A refusal is on the status line, and the draft stays in the field.
+            let _ = commit_comment(app, id);
+        }
     }
 }
 
-/// Write a comment's draft text back, when it has one that differs from the comment.
-pub(crate) fn commit_comment(app: &mut WordApp, ctx: &egui::Context, id: u32) {
-    let Some(text) = ctx.data_mut(|d| d.remove_temp::<String>(edit_key(id))) else { return };
-    let Some(part) = app.session.doc.comments.get(&id).map(|c| c.part) else { return };
-    if text != app.session.doc.plain_text(StoryRef::Part(part)) {
-        let _ = app.run("review.editComment", json!({"id": id, "text": text}));
+/// A comment field's widget id, per document: egui's own state for the field (its cursor and
+/// undo history) never carries over to another document's comment with the same id.
+fn field_id(app: &WordApp, ui: &Ui, kind: &str, id: u32) -> egui::Id {
+    ui.id().with((kind, app.session.document_id(), id))
+}
+
+/// Write a comment's draft text back, when it has one that differs from the comment. The draft
+/// is dropped once written (or when there is nothing to write); a refused edit keeps it.
+pub(crate) fn commit_comment(app: &mut WordApp, id: u32) -> Result<(), String> {
+    let Some(text) = drafts(app).edits.get(&id).cloned() else { return Ok(()) };
+    if let Some(part) = app.session.doc.comments.get(&id).map(|c| c.part)
+        && text != app.session.doc.plain_text(StoryRef::Part(part))
+    {
+        app.run("review.editComment", json!({"id": id, "text": text}))?;
     }
+    drafts(app).edits.remove(&id);
+    Ok(())
 }
 
 /// The comment a reply to `id` answers: replies to a reply join its thread.
@@ -458,11 +524,17 @@ fn thread_root(app: &WordApp, id: u32) -> u32 {
 }
 
 /// A field for replying to a comment. When it loses focus a non-empty reply is posted with
-/// `review.reply`; returns true when the field is done (posted or left empty).
+/// `review.reply`; returns true when the field is done (posted or left empty). A refused reply
+/// keeps the field open with its text.
 pub(crate) fn reply_editor(app: &mut WordApp, ui: &mut Ui, id: u32, font: Option<egui::FontId>, focus: bool) -> bool {
-    let key = reply_key(id);
-    let mut text = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_default();
-    let mut edit = egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY).hint_text(tl!("Write a reply"));
+    let mut text = drafts(app).replies.get(&id).cloned().unwrap_or_default();
+    let editable = crate::widgets::enabled(app, "review.reply");
+    let mut edit = egui::TextEdit::multiline(&mut text)
+        .id(field_id(app, ui, "comment_reply", id))
+        .interactive(editable)
+        .desired_rows(1)
+        .desired_width(f32::INFINITY)
+        .hint_text(tl!("Write a reply"));
     if let Some(f) = font {
         edit = edit.font(f);
     }
@@ -471,22 +543,50 @@ pub(crate) fn reply_editor(app: &mut WordApp, ui: &mut Ui, id: u32, font: Option
         r.request_focus();
     }
     if r.changed() {
-        ui.data_mut(|d| d.insert_temp(key, text));
+        drafts(app).replies.insert(id, text);
     }
-    if r.lost_focus() {
-        commit_reply(app, ui.ctx(), id);
+    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Escape throws the reply away and closes the field.
+        drafts(app).replies.remove(&id);
         return true;
     }
-    false
+    r.lost_focus() && commit_reply(app, id).is_ok()
 }
 
-/// Post a pending reply draft to comment `id` (nothing when there is none or it is blank).
-pub(crate) fn commit_reply(app: &mut WordApp, ctx: &egui::Context, id: u32) {
-    let Some(text) = ctx.data_mut(|d| d.remove_temp::<String>(reply_key(id))) else { return };
-    if !text.trim().is_empty() {
+/// Post a pending reply draft to comment `id` (nothing when there is none or it is blank). The
+/// draft is dropped once posted; a refused reply keeps it.
+pub(crate) fn commit_reply(app: &mut WordApp, id: u32) -> Result<(), String> {
+    let Some(text) = drafts(app).replies.get(&id).cloned() else { return Ok(()) };
+    if !text.trim().is_empty() && app.session.doc.comments.contains_key(&id) {
         let root = thread_root(app, id);
-        let _ = app.run("review.reply", json!({"id": root, "text": text.trim_end()}));
+        app.run("review.reply", json!({"id": root, "text": text.trim_end()}))?;
     }
+    drafts(app).replies.remove(&id);
+    Ok(())
+}
+
+/// Write every pending comment and reply draft to the document, so a save has them and a close,
+/// New or Open sees them as unsaved changes (#1348). Every draft is tried; the first refusal is
+/// returned (and is on the status line), and refused drafts stay.
+pub(crate) fn flush_comment_drafts(app: &mut WordApp) -> Result<(), String> {
+    let (edits, replies): (Vec<u32>, Vec<u32>) = {
+        let d = drafts(app);
+        (d.edits.keys().copied().collect(), d.replies.keys().copied().collect())
+    };
+    let mut first = Ok(());
+    for id in edits {
+        let r = commit_comment(app, id);
+        if first.is_ok() {
+            first = r;
+        }
+    }
+    for id in replies {
+        let r = commit_reply(app, id);
+        if first.is_ok() {
+            first = r;
+        }
+    }
+    first
 }
 
 /// Style Inspector: the paragraph and character levels at the caret, each with its style and the
@@ -654,6 +754,9 @@ fn describe(prop: &str, v: &Value) -> String {
         "suppressLineNumbers" => "Suppress line numbers",
         "bidi" => "Right-to-left",
         "dropCap" => "Drop cap",
+        "dropCapMargin" => "In margin",
+        "dropCapDistance" => "Distance from text",
+        "dropCapFont" => "Font",
         "style" => "Style",
         "numbering" => "Numbering",
         "lang" => "Language",
@@ -674,6 +777,7 @@ fn describe(prop: &str, v: &Value) -> String {
             l @ 0..=8 => crate::i18n::fmt(tl!("Level {n}"), &[("n", &(l + 1).to_string())]),
             _ => tl!("Body Text").to_string(),
         },
+        ("dropCapFont", Value::String(s)) => s.clone(),
         ("dropCap", Value::Number(n)) => crate::i18n::fmt(tl!("{n} lines"), &[("n", &n.to_string())]),
         (_, Value::Number(n)) => pt(n.as_f64().unwrap_or(0.0)),
         ("align", Value::String(s)) => tl!(match s.as_str() {
@@ -738,6 +842,75 @@ mod tests {
         assert_eq!(comment_stamp("2026-10-12"), "2026-10-12");
         assert_eq!(comment_stamp(""), "");
     }
+
+    /// #1902: Clipboard Delete returns focus to the document like paste does.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn clipboard_delete_returns_focus_to_the_document() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Hello")), crate::Services::default());
+        app.run("select.all", serde_json::json!({})).unwrap();
+        app.run("edit.copy", serde_json::json!({})).unwrap();
+        assert_eq!(app.session.clip_history.items().len(), 1);
+        app.run("edit.clipboardPane", serde_json::json!({"value": true})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        // Focus the button for real: a bare accesskit click leaves egui focus empty, and an
+        // unrelated chrome-click helper would hand focus to the canvas on its own.
+        h.get_by_label("Delete").focus();
+        h.run_steps(2);
+        h.state_mut().canvas.want_focus = false;
+        h.get_by_label("Delete").click();
+        h.run_steps(4);
+        assert!(h.state().canvas.focused, "Delete returns focus to the document");
+        assert!(h.state().session.clip_history.items().is_empty(), "the item was deleted");
+    }
+
+    /// #3032: Delete is greyed out for built-in styles in the Styles pane (the engine refuses
+    /// them — `crates/engine/src/cmd/para.rs`), while custom styles keep it enabled.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn built_in_styles_grey_out_delete_in_the_styles_pane() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        /// Draw only the pane, so each style name labels exactly one node — the ribbon's Styles
+        /// gallery shows the same names — right-click the row, and report whether its Delete is
+        /// greyed out.
+        fn delete_is_disabled(style: &str) -> bool {
+            let mut app =
+                crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Hello")), crate::Services::default());
+            app.run("styles.create", serde_json::json!({"name": "Callout"})).unwrap();
+            // The pane writes in the "semibold" family, which the app installs with the rest of the
+            // interface fonts (`chrome::title_bar`). Fonts take effect the frame after they are set,
+            // so the first frame only installs them and the pane is drawn from the second on.
+            let mut fonts = false;
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(400.0, 1200.0)).build_ui_state(
+                |ui, app: &mut crate::WordApp| {
+                    if !fonts {
+                        crate::theme::install_fonts(ui.ctx());
+                        fonts = true;
+                        return;
+                    }
+                    super::styles(app, ui);
+                },
+                app,
+            );
+            h.run_steps(4);
+            h.get_by_label(style).click_secondary();
+            h.run_steps(3);
+            h.get_by_label("Delete").accesskit_node().is_disabled()
+        }
+        assert!(delete_is_disabled("Normal"), "the built-in style's Delete is greyed out");
+        assert!(!delete_is_disabled("Callout"), "the custom style's Delete stays enabled");
+    }
 }
 
 #[cfg(test)]
@@ -745,9 +918,12 @@ mod navigation_tests {
     use super::*;
 
     #[test]
-    fn long_headings_truncate_without_stretching_navigation() {
-        let text = "An extremely long heading with words that must stay inside the navigation pane ".repeat(20);
-        for (width, level) in [(260.0, 0), (180.0, 5)] {
+    fn long_headings_wrap_without_stretching_navigation() {
+        // A heading that runs well past the width, and a single word wider than the pane.
+        let headings = ["An extremely long heading with words that must stay inside the navigation pane ".repeat(20), "x".repeat(400)];
+        // Draw one heading in a pane of `width`: the pane rect, the heading row's rect, the label's
+        // line count and whether it was elided.
+        let render = |width: f32, level: u8, text: &str| -> (egui::Rect, egui::Rect, usize, bool) {
             let ctx = egui::Context::default();
             crate::theme::install_fonts(&ctx);
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 600.0));
@@ -757,23 +933,33 @@ mod navigation_tests {
                 let result = egui::Panel::left("navigation_test")
                     .default_size(width)
                     .resizable(true)
-                    .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| nav_heading(ui, level, &text, true)).inner);
+                    .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| nav_heading(ui, level, text, true)).inner);
                 panel_rect = result.response.rect;
                 heading_rect = result.inner.rect;
             });
-
-            assert!(panel_rect.width() < width + 20.0, "long heading expanded the {width}px pane to {panel_rect:?}");
-            assert!(heading_rect.max.x <= panel_rect.max.x, "heading escaped pane: {heading_rect:?} / {panel_rect:?}");
-            assert!(
-                output.shapes.iter().any(|s| match &s.shape {
-                    egui::Shape::Text(t) => {
-                        t.galley.elided && t.galley.rows.last().is_some_and(|r| r.row.glyphs.last().is_some_and(|g| g.chr == '…'))
-                    }
-                    _ => false,
-                }),
-                "long heading must render a trailing ellipsis at {width}px"
-            );
+            let (rows, elided) = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.rows.len(), t.galley.elided)),
+                    _ => None,
+                })
+                .unwrap_or((0, false));
             output.drop_without_applying_deltas();
+            (panel_rect, heading_rect, rows, elided)
+        };
+        for (width, level) in [(260.0, 0), (180.0, 5)] {
+            let (_, one_line, _, _) = render(width, level, "Kilns");
+            for text in &headings {
+                let (panel_rect, heading_rect, rows, elided) = render(width, level, text);
+                assert!(panel_rect.width() < width + 20.0, "long heading expanded the {width}px pane to {panel_rect:?}");
+                assert!(heading_rect.max.x <= panel_rect.max.x, "heading escaped pane: {heading_rect:?} / {panel_rect:?}");
+                // The heading wraps onto further lines instead of ending in an ellipsis (#3015).
+                assert!(rows > 1, "long heading must wrap onto further lines at {width}px, got {rows}");
+                assert!(!elided, "long heading must not end in an ellipsis at {width}px");
+                // ... and its row grows with the text, where a short heading keeps one row.
+                assert!(heading_rect.height() > one_line.height(), "a wrapped heading row is taller at {width}px: {heading_rect:?} vs {one_line:?}");
+            }
         }
     }
 

@@ -795,6 +795,16 @@ fn is_horizontal(d: &crate::props::TextDirection) -> bool {
 }
 
 impl SectionProps {
+    /// Join the section before this one into it, as when the break between them is deleted:
+    /// this section's setup stays, as in Word, and the headers and footers it leaves out (linked
+    /// to the previous section) are taken from `before`, so its text keeps showing them.
+    pub fn absorb(&mut self, before: &SectionProps) {
+        for (own, prev) in [(&mut self.headers, &before.headers), (&mut self.footers, &before.footers)] {
+            own.default = own.default.or(prev.default);
+            own.first = own.first.or(prev.first);
+            own.even = own.even.or(prev.even);
+        }
+    }
     /// Width of the text area, points.
     pub fn text_width(&self) -> f32 {
         (self.page_w - self.margin_left - self.margin_right - self.gutter).max(18.0)

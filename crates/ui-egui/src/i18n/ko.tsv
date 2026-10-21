@@ -176,6 +176,7 @@
 	Use the Insert key to switch overtype on and off	Insert 키를 눌러 겹쳐쓰기 켜기/끄기
 	Whole document	문서 전체
 	This section	이 구역
+	Selected text	선택한 텍스트
 	Fill	채우기
 	Setting:	설정:
 	3-D	3차원
@@ -561,6 +562,10 @@
 	Modify…	수정…
 	Move or Resize	이동 또는 크기 조정
 	Multilevel List	다단계 목록
+	Multilevel List Library	다단계 목록 라이브러리
+	Article I.	제 I 조
+	Chapter 1	제 1 장
+	Section 1.01	제 1.01 절
 	Multiple Pages	여러 페이지
 	Name (A–Z)	이름순(A–Z)
 	Name:	이름:
@@ -835,6 +840,8 @@
 	Space before/after:	앞/뒤 간격:
 	Spacing	간격
 	Spacing (pt):	간격 (pt):
+	Kerning for fonts:	글꼴 커닝:
+	Points and above	pt 이상
 	Speech	음성
 	Spelling & Grammar	맞춤법 및 문법
 	Spelling &\nGrammar	맞춤법 및\n문법
@@ -1525,6 +1532,8 @@
 	Customize Ribbon	리본 사용자 지정
 	Add to Quick Access Toolbar	빠른 실행 도구 모음에 추가
 	Remove from Quick Access Toolbar	빠른 실행 도구 모음에서 제거
+	Hide Quick Access Toolbar	빠른 실행 도구 모음 숨기기
+	Show Quick Access Toolbar	빠른 실행 도구 모음 표시
 	Customize the Ribbon…	리본 사용자 지정…
 	Customize Quick Access Toolbar…	빠른 실행 도구 모음 사용자 지정…
 	More Commands…	명령 더 보기…
@@ -2008,6 +2017,7 @@
 	Column:	열:
 	Count by:	증가 단위:
 	Czech	체코어
+	Indonesian	인도네시아어
 	Danish	덴마크어
 	Delivery address:	배달 주소:
 	Detect language automatically	언어 자동 감지
@@ -2488,3 +2498,47 @@ preview	Title	제목
 	Bottom Right Cell	오른쪽 아래 셀
 	Inside Horizontal Border	안쪽 가로 테두리
 	Inside Vertical Border	안쪽 세로 테두리
+# Mail merge: recipient list search (#1576)
+	Find in list:	목록에서 찾기:
+	Any field	모든 필드
+	Matches: {count}	일치: {count}개
+	Show only records that will be merged	병합할 레코드만 표시
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	나누기 전에 셀 병합
+	Table size	표 크기
+	AutoFit behavior	자동 맞춤
+	Initial column width:	초기 열 너비:
+	AutoFit to contents	내용에 맞게 자동 맞춤
+	AutoFit to window	창에 맞게 자동 맞춤
+	Separate text at	텍스트 구분 기호
+	Commas	쉼표
+	Other:	기타:
+	The number must be between 1 and {max}.	숫자는 1에서 {max} 사이여야 합니다.
+	The measurement must be between {min} and {max}.	측정값은 {min}에서 {max} 사이여야 합니다.
+	Recently Used Fonts	최근 사용한 글꼴
+	All Fonts	모든 글꼴
+	Spike	스파이크
+	Insert Spike	스파이크 삽입
+# Add Font status (#1789)
+	Added 1 font	글꼴 1개를 추가했습니다
+	Added {n} fonts	글꼴 {n}개를 추가했습니다
+	{added}; {count} couldn't be read: {names}	{added}; 읽을 수 없는 파일 {count}개: {names}
+	{names} and {n} more	{names} 외 {n}개
+	{added}; {n} skipped (limit {max})	{added}; {n}개 건너뜀 (한도 {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	본문 안
+	In margin	여백에
+	Drop Cap Options…	문단 첫 글자 장식 옵션…
+	Lines to drop:	장식할 줄 수:
+	Distance from text:	본문과의 간격:
+	Distance from text	본문과의 간격
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	가로 세로 비율 고정
+	Relative to original picture size	원래 그림 크기 기준
+	Original size	원래 크기
+	{width} × {height} pixels	{width} × {height} 픽셀
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	5 cm 또는 300 px처럼 원하는 단위로 크기를 입력하세요. 다른 쪽도 함께 바뀌어 그림의 비율이 유지됩니다.
+
+	Import…	가져오기…

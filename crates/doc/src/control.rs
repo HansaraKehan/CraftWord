@@ -242,6 +242,10 @@ pub struct ContentControl {
     /// The run properties of `w:sdtPr` (`w:rPr`), kept verbatim (XML).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub rpr_xml: String,
+    /// The same run properties, read: the formatting text typed in place of the placeholder
+    /// takes (ECMA-376 §17.5.2.27). `None` when the control names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_props: Option<crate::props::CharProps>,
     /// Other `w:sdtPr` children we don't model, kept verbatim (XML) in file order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<String>,

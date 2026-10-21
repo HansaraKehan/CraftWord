@@ -170,6 +170,10 @@ pub enum Dialog {
         hidden: bool,
         color: String,
         spacing: f32,
+        /// Kerning for fonts (`w:kern`), from the Advanced tab: `None` while the selected text
+        /// differs, shown neither on nor off; `kern_at` is its Points and above size.
+        kern: Option<bool>,
+        kern_at: f32,
         /// The properties the fields stood for when the dialog opened: OK sends only what the
         /// user changed, so formatting the dialog can't show (a double underline) or left
         /// alone stays as it is.
@@ -265,10 +269,16 @@ pub enum Dialog {
         message: String,
         /// Vertical alignment (`layout.verticalAlign`, applied only if changed).
         valign: wordcraft_doc::section::PageVAlign,
+        /// Headers and footers: different odd and even pages (the document's) and a different
+        /// first page (the section's), applied only if changed (#1230).
+        odd_even: bool,
+        first_page: bool,
     },
     Link {
         url: String,
         text: String,
+        /// Focus and select the address when the dialog first opens.
+        focus: bool,
         /// "Place in This Document" instead of "Existing File or Web Page".
         place: bool,
         /// The document's places (`link.targets`), read when that tab is first shown.
@@ -469,6 +479,12 @@ pub enum Dialog {
         #[serde(skip)]
         basis: Box<TableForm>,
     },
+    /// Table Layout › Cell Margins: edits the table's default margins.
+    CellMargins {
+        form: Box<CellMarginsForm>,
+        #[serde(skip)]
+        basis: Box<CellMarginsForm>,
+    },
     /// Opening a password-protected document (#55): the password, then `file.open` with
     /// `params` again. The password is never serialised or printed.
     Password {
@@ -555,6 +571,47 @@ pub struct TableForm {
     pub cell_width: f32,
     /// `top`, `center` or `bottom`.
     pub valign: String,
+}
+
+/// The Cell Margins dialog's values, in the interface unit.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellMarginsForm {
+    pub top: f32,
+    pub left: f32,
+    pub bottom: f32,
+    pub right: f32,
+}
+
+impl CellMarginsForm {
+    pub(crate) fn read(app: &WordApp) -> Option<Self> {
+        let (tp, _, _) = app.session.sel.focus.path.cell()?;
+        let table = app.session.doc.table(app.session.sel.focus.story, &tp)?;
+        let scale = crate::options::unit().pt_per_unit();
+        let style = table.props.style.as_deref().and_then(|id| app.session.doc.styles.table_style(id));
+        let margins = table.props.cell_margins.or_else(|| style.and_then(|s| s.parts.cell_margins)).unwrap_or([0.0, 5.4, 0.0, 5.4]);
+        let field = |value: f32, fallback: f32| if value.is_finite() { value.clamp(0.0, 144.0) / scale } else { fallback / scale };
+        Some(Self { top: field(margins[0], 0.0), left: field(margins[1], 5.4), bottom: field(margins[2], 0.0), right: field(margins[3], 5.4) })
+    }
+
+    /// Send all four values together: changing one side must preserve the other three.
+    pub(crate) fn changes(&self, basis: &CellMarginsForm) -> Value {
+        if [self.top, self.left, self.bottom, self.right]
+            .into_iter()
+            .zip([basis.top, basis.left, basis.bottom, basis.right])
+            .all(|(a, b)| (a - b).abs() <= 1e-4)
+        {
+            return json!({});
+        }
+        let scale = crate::options::unit().pt_per_unit();
+        let points = |v: f32, old: f32| if v.is_finite() { (v * scale).clamp(0.0, 144.0) } else { old * scale };
+        json!({
+            "top": points(self.top, basis.top),
+            "left": points(self.left, basis.left),
+            "bottom": points(self.bottom, basis.bottom),
+            "right": points(self.right, basis.right),
+        })
+    }
 }
 
 impl TableForm {
@@ -700,6 +757,21 @@ pub struct RecipientFilter {
     pub rules: Vec<FilterRow>,
     /// Sort by, then by, then by: a field (empty: none) and descending.
     pub sort: [(String, bool); 3],
+    /// Find in list (#1576): only rows with a cell containing this (any case) are shown.
+    /// View only, like `only_merged`: neither changes the list or the merge.
+    pub find: String,
+    /// Show only the records the filter keeps (#1576).
+    pub only_merged: bool,
+    /// The grid's rows held while one of its cells is edited (see [`hold_rows`]).
+    #[serde(skip)]
+    pub(crate) held: Option<Vec<usize>>,
+    /// The grid cell that had the keyboard last frame.
+    #[serde(skip)]
+    pub(crate) editing: Option<egui::Id>,
+    /// The last merge order worked out, keyed by a hash of the list, filter and sort, so a long
+    /// list isn't filtered and sorted again on every frame.
+    #[serde(skip)]
+    pub(crate) order_cache: Option<(u64, Vec<Option<usize>>)>,
 }
 
 /// One filter condition row: `field op value`, joined to the row above with And or Or.
@@ -725,32 +797,125 @@ impl RecipientFilter {
         }
         let rules: Vec<FilterRow> =
             m.filter.iter().map(|r| FilterRow { field: r.field.clone(), op: r.op, value: r.value.clone(), or: r.or }).collect();
-        RecipientFilter { open: !rules.is_empty() || !m.sort.is_empty(), rules, sort }
+        RecipientFilter { open: !rules.is_empty() || !m.sort.is_empty(), rules, sort, ..Default::default() }
     }
 
-    fn engine(&self) -> (Vec<FilterRule>, Vec<SortKey>) {
+    /// The rules and sort keys on `fields` (a rule on a field renamed or removed in the table
+    /// drops, as the engine drops it when the list is edited).
+    fn engine(&self, fields: &[String]) -> (Vec<FilterRule>, Vec<SortKey>) {
+        let known = |f: &str| !f.trim().is_empty() && fields.iter().any(|h| h.trim().eq_ignore_ascii_case(f.trim()));
         let rules = self
             .rules
             .iter()
-            .filter(|r| !r.field.is_empty())
+            .filter(|r| known(&r.field))
             .map(|r| FilterRule { field: r.field.clone(), op: r.op, value: r.value.clone(), or: r.or })
             .collect();
-        let sort = self.sort.iter().filter(|(f, _)| !f.is_empty()).map(|(f, d)| SortKey { field: f.clone(), descending: *d }).collect();
+        let sort = self.sort.iter().filter(|(f, _)| known(f)).map(|(f, d)| SortKey { field: f.clone(), descending: *d }).collect();
         (rules, sort)
+    }
+
+    /// Each record's place in the merge (None: filtered out), from the cache when the list,
+    /// filter and sort haven't changed.
+    fn order(&mut self, fields: &[String], rows: &[Vec<String>]) -> &[Option<usize>] {
+        use std::hash::{Hash, Hasher};
+        let (rules, sort) = self.engine(fields);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        fields.hash(&mut h);
+        rows.hash(&mut h);
+        for r in &rules {
+            (&r.field, r.op.id(), &r.value, r.or).hash(&mut h);
+        }
+        for k in &sort {
+            (&k.field, k.descending).hash(&mut h);
+        }
+        let key = h.finish();
+        if self.order_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut order = vec![None; rows.len()];
+            for (n, i) in wordcraft_engine::cmd::mailings::select_records(fields, rows, &rules, &sort).into_iter().enumerate() {
+                if let Some(slot) = order.get_mut(i) {
+                    *slot = Some(n + 1);
+                }
+            }
+            self.order_cache = Some((key, order));
+        }
+        self.order_cache.as_ref().map_or(&[], |(_, o)| o.as_slice())
     }
 
     fn is_empty(&self) -> bool {
         self.rules.iter().all(|r| r.field.is_empty()) && self.sort.iter().all(|(f, _)| f.is_empty())
     }
 
-    /// `mailings.filterRecipients` params.
-    pub fn params(&self) -> Value {
-        let (rules, sort) = self.engine();
+    /// `mailings.filterRecipients` params for a list with `fields`.
+    pub fn params(&self, fields: &[String]) -> Value {
+        let (rules, sort) = self.engine(fields);
         json!({
             "rules": rules.iter().map(|r| json!({"field": r.field, "op": r.op.id(), "value": r.value, "join": if r.or { "or" } else { "and" }})).collect::<Vec<_>>(),
             "sort": sort.iter().map(|k| json!({"field": k.field, "descending": k.descending})).collect::<Vec<_>>(),
         })
     }
+}
+
+/// Each record's place in the merge (None: filtered out), when `filter` filters or sorts.
+#[cfg(test)]
+pub(crate) fn merge_order(fields: &[String], rows: &[Vec<String>], filter: &RecipientFilter) -> Option<Vec<Option<usize>>> {
+    (!filter.is_empty()).then(|| {
+        let (rules, sort) = filter.engine(fields);
+        let mut order = vec![None; rows.len()];
+        for (k, i) in wordcraft_engine::cmd::mailings::select_records(fields, rows, &rules, &sort).into_iter().enumerate() {
+            if let Some(slot) = order.get_mut(i) {
+                *slot = Some(k + 1);
+            }
+        }
+        order
+    })
+}
+
+/// The Recipient List grid's rows (#1576): real indices into `rows`, in list order, matching
+/// `find` and, with `only_merged`, kept by the filter (`order` from [`merge_order`]).
+pub(crate) fn visible_recipients(rows: &[Vec<String>], order: Option<&[Option<usize>]>, find: &str, only_merged: bool) -> Vec<usize> {
+    let needle: Vec<char> = find.trim().chars().flat_map(fold_char).collect();
+    let kept = |i: usize| !only_merged || order.is_none_or(|o| o.get(i).copied().flatten().is_some());
+    let found = |row: &Vec<String>| needle.is_empty() || row.iter().any(|c| contains_folded(c, &needle));
+    rows.iter().enumerate().filter(|(i, row)| kept(*i) && found(row)).map(|(i, _)| i).collect()
+}
+
+/// The rows the grid shows (#1576): `fresh`, except while a grid cell is being edited, when the
+/// rows shown as the edit began stay put, so a row the edit stops matching doesn't vanish (or
+/// slide another record under the cursor) mid-edit. `rows` is the list's length.
+pub(crate) fn hold_rows(fresh: Vec<usize>, held: &mut Option<Vec<usize>>, editing: bool, rows: usize) -> Vec<usize> {
+    if !editing {
+        *held = None;
+        return fresh;
+    }
+    match held {
+        Some(h) => h.iter().copied().filter(|&r| r < rows).collect(),
+        None => {
+            *held = Some(fresh.clone());
+            fresh
+        }
+    }
+}
+
+impl RecipientFilter {
+    /// New Entry: show every row again, so the new, empty entry can't be hidden by the view.
+    pub(crate) fn show_all(&mut self) {
+        self.find.clear();
+        self.only_merged = false;
+        self.held = None;
+    }
+}
+
+/// Lower-cases a char for searching; final sigma `ς` counts as `σ`, so `ΟΣ` matches `ος`.
+fn fold_char(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
+}
+
+/// Whether `hay` contains `needle` (folded chars) in any case, without allocating.
+fn contains_folded(hay: &str, needle: &[char]) -> bool {
+    hay.char_indices().any(|(i, _)| {
+        let mut h = hay.get(i..).unwrap_or_default().chars().flat_map(fold_char);
+        needle.iter().all(|n| h.next() == Some(*n))
+    })
 }
 
 /// A colour menu: a swatch with the colour grid and No Color. `value` is hex, empty for none.
@@ -830,6 +995,7 @@ impl Dialog {
             Dialog::MatchFields { .. } => "matchFields",
             Dialog::CheckErrors { .. } => "checkErrors",
             Dialog::TableProperties { .. } => "tableProperties",
+            Dialog::CellMargins { .. } => "tableCellMargins",
             Dialog::Password { .. } => "password",
             Dialog::EncryptPassword { .. } => "encryptPassword",
             Dialog::DefineList { .. } => "defineList",
@@ -890,6 +1056,7 @@ impl Dialog {
                     text
                 };
                 let asian = ["zh", "ja", "ko"].iter().any(|l| lang.starts_with(l)) || !font_ea.is_empty() || text.chars().any(east_asian_char);
+                let kern = st.get("kern").and_then(Value::as_f64);
                 let mut d = Dialog::Font {
                     font_was: font.clone(),
                     font,
@@ -908,6 +1075,8 @@ impl Dialog {
                     hidden: b("hidden"),
                     color: s("color"),
                     spacing: st.get("spacing").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    kern: kern.map(|k| k > 0.0),
+                    kern_at: kern.filter(|k| *k > 0.0).unwrap_or(12.0) as f32,
                     start: serde_json::Map::new(),
                 };
                 let props = font_props(&d);
@@ -1006,9 +1175,13 @@ impl Dialog {
                     grid_was: grid,
                     rtl: sp.rtl,
                     valign: sp.valign,
+                    odd_even: app.session.doc.settings.even_odd_headers,
+                    first_page: sp.title_page,
                 }
             }
-            "link" => Dialog::Link { url: "https://".into(), text: app.session.selected_text(), place: false, targets: None, pick: None },
+            "link" => {
+                Dialog::Link { url: "https://".into(), text: app.session.selected_text(), place: false, targets: None, pick: None, focus: true }
+            }
             "bookmark" => Dialog::Bookmark { name: bookmark_at_caret(&app.session), by_location: false, hidden: false, deleted: false },
             "wordCount" => Dialog::WordCount { stats: app.session.run("review.wordCount", &json!({})).unwrap_or_default() },
             "zoom" => Dialog::Zoom { percent: (app.session.view.zoom * 100.0).round() },
@@ -1034,6 +1207,10 @@ impl Dialog {
             "tableProperties" => {
                 let form = Box::new(TableForm::read(app)?);
                 Dialog::TableProperties { basis: form.clone(), form }
+            }
+            "tableCellMargins" => {
+                let form = Box::new(CellMarginsForm::read(app)?);
+                Dialog::CellMargins { basis: form.clone(), form }
             }
             "enclose" => {
                 // The selection's text and its enclosure, if it has one.
@@ -1236,7 +1413,6 @@ pub fn show(app: &mut WordApp, ctx: &egui::Context) {
         ctx.data_mut(|d| d.remove::<(egui::Id, u8)>(dialog_top_key()));
         return;
     };
-    let mut open = true;
     let mut close = false;
     let title = match &d {
         Dialog::RenameDocument { .. } => "Rename Document",
@@ -1277,6 +1453,7 @@ pub fn show(app: &mut WordApp, ctx: &egui::Context) {
         Dialog::MatchFields { .. } => "Match Fields",
         Dialog::CheckErrors { .. } => "Check for Errors",
         Dialog::TableProperties { .. } => "Table Properties",
+        Dialog::CellMargins { .. } => "Cell Margins",
         Dialog::Password { .. } => "Password",
         Dialog::EncryptPassword { .. } => "Encrypt with Password",
         Dialog::DefineList { .. } => "Define New Multilevel List",
@@ -1292,17 +1469,34 @@ pub fn show(app: &mut WordApp, ctx: &egui::Context) {
         Dialog::Layout(d) => d.title(),
     };
     let id = egui::Id::new(("dialog", title));
-    let shown = place_dialog(ctx, id, egui::Window::new(tl!(title)).id(id).collapsible(false).resizable(false)).open(&mut open).show(ctx, |ui| {
+    let window = crate::window_close::window(ctx, egui::Window::new(tl!(title)).id(id).collapsible(false).resizable(false));
+    let shown = place_dialog(ctx, id, window).show(ctx, |ui| {
         ui.set_min_width(340.0);
         close = body(app, ui, &mut d);
     });
-    if shown.is_some() {
+    if let Some(shown) = &shown {
+        if let Dialog::SaveChanges { name, message, .. } = &d {
+            let question = crate::i18n::fmt(tl!("Do you want to save changes to {name}?"), &[("name", name)]);
+            let mut description = tl!("Your changes will be lost if you don't save them.").to_string();
+            if !message.is_empty() {
+                description.push('\n');
+                description.push_str(message);
+            }
+            // This is an urgent decision, not another application window. Keep its context with
+            // the focused choice, including when a failed Save brings the same prompt back.
+            ctx.accesskit_node_builder(shown.response.id, |node| {
+                node.set_role(egui::accesskit::Role::AlertDialog);
+                node.set_label(question);
+                node.set_description(description);
+            });
+        }
         count_dialog_frame(ctx, id);
+        close |= crate::window_close::show(ctx, &shown.response, &Tokens::get(ctx));
     }
-    if open && !close {
-        app.dialog = Some(d);
-    } else {
+    if close {
         app.canvas.want_focus = true;
+    } else {
+        app.dialog = Some(d);
     }
 }
 
@@ -1426,6 +1620,24 @@ fn page_paper_group(ui: &mut Ui, paper: &mut (f32, f32), landscape: &mut bool, c
     });
 }
 
+/// Cancel key for dialogs: Escape everywhere, plus ⌘. (Command+Period) on macOS.
+pub(crate) fn cancel_key_pressed(ui: &Ui) -> bool {
+    ui.input(|i| i.key_pressed(egui::Key::Escape) || (cfg!(target_os = "macos") && i.modifiers.command && i.key_pressed(egui::Key::Period)))
+}
+
+/// Lays out an OK and a Cancel button right-to-left, in the platform's order:
+/// macOS puts Cancel left of the default OK button; Windows and Linux put OK left of Cancel.
+/// Returns `(ok, cancel)` responses. Call inside a right-to-left layout.
+pub(crate) fn ok_cancel_responses(ui: &mut Ui, draw_ok: impl FnOnce(&mut Ui) -> egui::Response, cancel: &str) -> (egui::Response, egui::Response) {
+    if cfg!(target_os = "macos") {
+        let okb = draw_ok(ui);
+        (okb, ui.button(cancel))
+    } else {
+        let cancelb = ui.button(cancel);
+        (draw_ok(ui), cancelb)
+    }
+}
+
 pub(crate) fn buttons(ui: &mut Ui, ok: &str) -> (bool, bool) {
     let mut r = (false, false);
     ui.add_space(8.0);
@@ -1433,10 +1645,10 @@ pub(crate) fn buttons(ui: &mut Ui, ok: &str) -> (bool, bool) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Enter and Escape belong to the Colors dialog while it is open above this one.
             let keys = !crate::colors::is_open(ui.ctx());
-            if ui.button(tl!("Cancel")).clicked() || (keys && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+            let (okb, cancelb) = ok_cancel_responses(ui, |ui| ui.add(crate::widgets::primary_button(ui, ok)), tl!("Cancel"));
+            if cancelb.clicked() || (keys && cancel_key_pressed(ui)) {
                 r.1 = true;
             }
-            let okb = ui.add(crate::widgets::primary_button(ui, ok));
             if okb.clicked() || (keys && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 r.0 = true;
             }
@@ -1447,7 +1659,10 @@ pub(crate) fn buttons(ui: &mut Ui, ok: &str) -> (bool, bool) {
 
 /// The character properties the Font dialog's fields stand for.
 fn font_props(d: &Dialog) -> serde_json::Map<String, Value> {
-    let Dialog::Font { font, font_ea, size, bold, italic, underline, strike, sup, sub, small_caps, caps, hidden, color, spacing, .. } = d else {
+    let Dialog::Font {
+        font, font_ea, size, bold, italic, underline, strike, sup, sub, small_caps, caps, hidden, color, spacing, kern, kern_at, ..
+    } = d
+    else {
         return serde_json::Map::new();
     };
     let mut props = serde_json::Map::new();
@@ -1467,6 +1682,15 @@ fn font_props(d: &Dialog) -> serde_json::Map<String, Value> {
     props.insert("caps".into(), json!(*caps));
     props.insert("hidden".into(), json!(*hidden));
     props.insert("spacing".into(), json!(*spacing));
+    match kern {
+        Some(true) => {
+            props.insert("kern".into(), json!(kern_at.clamp(1.0, 1638.0)));
+        }
+        Some(false) => {
+            props.insert("kern".into(), json!(0.0));
+        }
+        None => {}
+    }
     if !font.trim().is_empty() {
         props.insert("font".into(), json!(font.trim()));
     }
@@ -1539,7 +1763,26 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             false
         }
 
-        Dialog::Font { font, font_ea, asian, size, bold, italic, underline, strike, sup, sub, small_caps, caps, hidden, color, spacing, .. } => {
+        Dialog::Font {
+            font,
+            font_ea,
+            asian,
+            size,
+            bold,
+            italic,
+            underline,
+            strike,
+            sup,
+            sub,
+            small_caps,
+            caps,
+            hidden,
+            color,
+            spacing,
+            kern,
+            kern_at,
+            ..
+        } => {
             // Build the sample text format for the preview pane below.
             let preview_size = size.trim().parse::<f32>().unwrap_or(12.0).clamp(6.0, 72.0);
             let preview_color = wordcraft_doc::Rgb::parse(color).map(crate::theme::c32).unwrap_or_else(|| ui.visuals().text_color());
@@ -1599,6 +1842,22 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 ui.end_row();
                 ui.label(tl!("Spacing (pt):"));
                 ui.add(egui::DragValue::new(spacing).speed(0.1).range(-20.0..=20.0));
+                ui.end_row();
+                let label = tl!("Kerning for fonts:");
+                match kern {
+                    Some(on) => {
+                        ui.checkbox(on, label);
+                    }
+                    None => {
+                        if ui.add(egui::Checkbox::new(&mut false, label).indeterminate(true)).clicked() {
+                            *kern = Some(true);
+                        }
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.add_enabled(*kern == Some(true), egui::DragValue::new(kern_at).speed(0.5).range(1.0..=1638.0).max_decimals(1));
+                    ui.label(tl!("Points and above"));
+                });
                 ui.end_row();
             });
             ui.separator();
@@ -1912,6 +2171,17 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             }
             ok || cancel
         }
+        Dialog::CellMargins { form, basis } => {
+            cell_margins_dialog(ui, form);
+            let (ok, cancel) = buttons(ui, tl!("OK"));
+            if ok {
+                let changes = form.changes(basis);
+                if changes.as_object().is_some_and(|m| !m.is_empty()) {
+                    let _ = app.run("table.cellMargins", changes);
+                }
+            }
+            ok || cancel
+        }
         Dialog::InsertTable { rows, cols } => {
             egui::Grid::new("it").num_columns(2).show(ui, |ui| {
                 ui.label(tl!("Number of columns:"));
@@ -1927,7 +2197,24 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             }
             ok || cancel
         }
-        Dialog::PageSetup { top, bottom, left, right, landscape, mirror, rtl, grid, grid_was, paper, paper_was, paper_custom, message, valign } => {
+        Dialog::PageSetup {
+            top,
+            bottom,
+            left,
+            right,
+            landscape,
+            mirror,
+            rtl,
+            grid,
+            grid_was,
+            paper,
+            paper_was,
+            paper_custom,
+            message,
+            valign,
+            odd_even,
+            first_page,
+        } => {
             ui.label(egui::RichText::new(tl!("Margins")).font(semibold(12.5)));
             egui::Grid::new("ps").num_columns(4).show(ui, |ui| {
                 ui.label(tl!("Top:"));
@@ -1974,6 +2261,10 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 ui.label(egui::RichText::new(message.as_str()).small().color(ui.visuals().error_fg_color));
             }
             page_valign_combo(ui, valign);
+            // Word's Page Setup › Layout: a title page without the page number (#1230).
+            ui.label(egui::RichText::new(tl!("Headers and footers")).font(semibold(12.5)));
+            ui.checkbox(odd_even, tl!("Different Odd & Even Pages"));
+            ui.checkbox(first_page, tl!("Different First Page"));
             let (mut ok, cancel) = buttons(ui, tl!("OK"));
             if ok {
                 // Everything OK changes is one undo step; a refused command applies nothing.
@@ -2001,6 +2292,12 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                         if *valign != wordcraft_engine::cmd::page::sect(&app.session).valign {
                             commands.push(("layout.verticalAlign", json!({"value": page_valign_value(*valign)})));
                         }
+                        if *odd_even != app.session.doc.settings.even_odd_headers {
+                            commands.push(("layout.differentOddEven", json!({"value": *odd_even})));
+                        }
+                        if *first_page != wordcraft_engine::cmd::page::sect(&app.session).title_page {
+                            commands.push(("layout.differentFirstPage", json!({"value": *first_page})));
+                        }
                         run_as_one_step(app, commands)
                     });
                 if let Err(e) = result {
@@ -2010,7 +2307,7 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             }
             ok || cancel
         }
-        Dialog::Link { url, text, place, targets, pick } => {
+        Dialog::Link { url, text, place, targets, pick, focus } => {
             // Word's "Link to:" choices; the places are read once, when that tab is first shown.
             ui.horizontal(|ui| {
                 ui.label(tl!("Link to:"));
@@ -2026,7 +2323,13 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 ui.end_row();
                 if !*place {
                     ui.label(tl!("Address:"));
-                    ui.text_edit_singleline(url);
+                    let mut out = egui::TextEdit::singleline(url).id(egui::Id::new("link_address")).show(ui);
+                    if std::mem::take(focus) {
+                        out.response.request_focus();
+                        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(url.chars().count()));
+                        out.state.cursor.set_char_range(Some(all));
+                        out.state.store(ui.ctx(), out.response.id);
+                    }
                     ui.end_row();
                 }
             });
@@ -2745,7 +3048,7 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
 }
 
 /// The Recipient List dialog's body: a file button, the editable table, OK/Cancel. True to close.
-fn recipient_list(
+pub(crate) fn recipient_list(
     app: &mut WordApp,
     ui: &mut Ui,
     fields: &mut Vec<String>,
@@ -2758,19 +3061,13 @@ fn recipient_list(
     const ROW_H: f32 = 24.0;
     const NUM_W: f32 = 34.0;
     // Each record's place in the merge (None: filtered out), when there is a filter or sort.
-    let order: Option<Vec<Option<usize>>> = (!filter.is_empty()).then(|| {
-        let (rules, sort) = filter.engine();
-        let mut order = vec![None; rows.len()];
-        for (k, i) in wordcraft_engine::cmd::mailings::select_records(fields, rows, &rules, &sort).into_iter().enumerate() {
-            if let Some(slot) = order.get_mut(i) {
-                *slot = Some(k + 1);
-            }
-        }
-        order
-    });
+    let order: Option<Vec<Option<usize>>> = (!filter.is_empty()).then(|| filter.order(fields, rows).to_vec());
     // Wide enough for every field (up to a limit; more scroll sideways).
     let gap = ui.spacing().item_spacing.x;
-    let table_w = NUM_W + gap + fields.len() as f32 * (CELL_W + X_W + 2.0 * gap) + X_W + 2.0 * gap;
+    // Plus the rows' scroll bar, so each row's remove button stays in view (#1576).
+    let scroll = ui.spacing().scroll;
+    let bar = scroll.bar_width + scroll.bar_inner_margin + scroll.bar_outer_margin;
+    let table_w = NUM_W + gap + fields.len() as f32 * (CELL_W + X_W + 2.0 * gap) + X_W + 2.0 * gap + bar + X_W;
     ui.set_min_width(table_w.clamp(340.0, 720.0));
     ui.label(tl!("Type the recipients, or load them from a file."));
     if ui.button(tl!("Use an Existing List…")).clicked() {
@@ -2779,10 +3076,38 @@ fn recipient_list(
         return true;
     }
     ui.add_space(6.0);
+    // Find in list and the merged-only view (#1576) hide rows from the grid, never change them.
+    // Nothing to leave out without a filter: the box shows unticked.
+    if order.is_none() {
+        filter.only_merged = false;
+    }
+    // A grid cell still has the keyboard: its rows stay put (see `hold_rows`).
+    let editing = filter.editing.is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+    if !editing {
+        filter.editing = None;
+    }
+    let merged_only = egui::Checkbox::new(&mut filter.only_merged, tl!("Show only records that will be merged"));
+    ui.add_enabled(order.is_some(), merged_only);
+    let visible = ui
+        .horizontal(|ui| {
+            ui.label(tl!("Find in list:"));
+            ui.add(egui::TextEdit::singleline(&mut filter.find).desired_width(180.0).hint_text(tl!("Any field")));
+            // The rows the grid shows, by real index: edits and removes go to the right record.
+            let fresh = visible_recipients(rows, order.as_deref(), &filter.find, filter.only_merged);
+            let visible = hold_rows(fresh, &mut filter.held, editing, rows.len());
+            if !filter.find.trim().is_empty() {
+                let count = visible.len().to_string();
+                ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Matches: {count}"), &[("count", &count)])).weak());
+            }
+            visible
+        })
+        .inner;
+    ui.add_space(4.0);
     let mut remove_field = None;
     let can_remove = fields.len() > 1;
     let mut remove_row = None;
     let mut x_w = X_W;
+    let mut focused = None;
     egui::ScrollArea::horizontal().id_salt("recipients_h").max_width(720.0).show(ui, |ui| {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -2797,21 +3122,29 @@ fn recipient_list(
                 }
             });
             ui.separator();
-            egui::ScrollArea::vertical().id_salt("recipients_v").max_height(260.0).show_rows(ui, ROW_H, rows.len(), |ui, range| {
-                for r in range {
+            egui::ScrollArea::vertical().id_salt("recipients_v").max_height(260.0).show_rows(ui, ROW_H, visible.len(), |ui, range| {
+                for k in range {
+                    let Some(&r) = visible.get(k) else { continue };
                     let Some(row) = rows.get_mut(r) else { continue };
-                    ui.horizontal(|ui| {
+                    // Striped rows, like a data grid: painted under the row once its size is known.
+                    let stripe = ui.painter().add(egui::Shape::Noop);
+                    let line = ui.horizontal(|ui| {
                         // The record's number in the merge, a dash when the filter leaves it out.
                         let (num, kept) = match order.as_ref().map(|o| o.get(r).copied().flatten()) {
                             None => ((r + 1).to_string(), true),
-                            Some(Some(k)) => (k.to_string(), true),
+                            Some(Some(n)) => (n.to_string(), true),
                             Some(None) => ("–".to_string(), false),
                         };
                         let num = egui::RichText::new(num).weak();
                         let (rect, _) = ui.allocate_exact_size(vec2(NUM_W, ROW_H - 4.0), Sense::hover());
                         ui.put(rect, egui::Label::new(if kept { num } else { num.strikethrough() }));
-                        for c in row.iter_mut() {
-                            ui.add_sized([CELL_W, ROW_H - 4.0], egui::TextEdit::singleline(c));
+                        for (j, c) in row.iter_mut().enumerate() {
+                            // Keyed on the record, not its place in the grid: when the view hides
+                            // or moves rows, the keyboard can't land in another record (#1576).
+                            let cell = ui.add_sized([CELL_W, ROW_H - 4.0], egui::TextEdit::singleline(c).id_salt(("recipient_cell", r, j)));
+                            if cell.has_focus() {
+                                focused = Some(cell.id);
+                            }
                             // Under the field's remove button.
                             ui.allocate_exact_size(vec2(x_w, X_W), Sense::hover());
                         }
@@ -2819,10 +3152,25 @@ fn recipient_list(
                             remove_row = Some(r);
                         }
                     });
+                    if k % 2 == 1 {
+                        let half = ui.spacing().item_spacing.y / 2.0;
+                        let rect = line.response.rect.expand2(vec2(0.0, half));
+                        ui.painter().set(stripe, egui::Shape::rect_filled(rect, 2.0, ui.visuals().faint_bg_color));
+                    }
                 }
             });
         });
     });
+    if focused.is_some() {
+        filter.editing = focused;
+    }
+    if remove_field.is_some() || remove_row.is_some() {
+        // Row numbers move: hold nothing, and let go of the focused cell (its id names a row).
+        filter.held = None;
+        if let Some(id) = filter.editing.take() {
+            ui.memory_mut(|m| m.surrender_focus(id));
+        }
+    }
     if let Some(i) = remove_field.filter(|_| fields.len() > 1) {
         fields.remove(i);
         for r in rows.iter_mut() {
@@ -2836,6 +3184,8 @@ fn recipient_list(
     }
     ui.horizontal(|ui| {
         if ui.button(tl!("New Entry")).clicked() {
+            // The view would hide the new, empty entry.
+            filter.show_all();
             rows.push(vec![String::new(); fields.len()]);
         }
         if ui.button(tl!("Add Field")).clicked() {
@@ -2870,7 +3220,7 @@ fn recipient_list(
     }
     let r = recipient_table(fields, rows).map_err(|e| tl!(e).to_string()).and_then(|params| app.load_recipients(params));
     // A new list starts unfiltered; the dialog's filter and sort apply to it.
-    let r = r.and_then(|_| if filter.is_empty() { Ok(Value::Null) } else { app.run("mailings.filterRecipients", filter.params()) });
+    let r = r.and_then(|_| if filter.is_empty() { Ok(Value::Null) } else { app.run("mailings.filterRecipients", filter.params(fields)) });
     match r {
         Ok(_) => true,
         Err(e) => {
@@ -3021,6 +3371,18 @@ fn table_properties(ui: &mut Ui, f: &mut TableForm) {
             }
         });
         ui.end_row();
+    });
+}
+
+fn cell_margins_dialog(ui: &mut Ui, f: &mut CellMarginsForm) {
+    let unit = crate::options::unit();
+    let max = 144.0 / unit.pt_per_unit();
+    egui::Grid::new("cell_margins").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+        for (label, value) in [("Top:", &mut f.top), ("Left:", &mut f.left), ("Bottom:", &mut f.bottom), ("Right:", &mut f.right)] {
+            ui.label(tl!(label));
+            ui.add(egui::DragValue::new(value).speed(0.01).range(0.0..=max).measure(unit).max_decimals(2));
+            ui.end_row();
+        }
     });
 }
 
@@ -3182,6 +3544,10 @@ fn bookmark(app: &mut WordApp, ui: &mut Ui, name: &mut String, by_location: &mut
                 ui.set_width(232.0);
                 ui.set_height(150.0);
                 egui::ScrollArea::vertical().id_salt("bookmark_list").max_height(150.0).auto_shrink([false, false]).show(ui, |ui| {
+                    if marks.is_empty() {
+                        // #1904: a blank box says nothing; reuse the Field dialog's wording.
+                        ui.label(egui::RichText::new(tl!("The document has no bookmarks yet.")).small().color(t.text_dim));
+                    }
                     for n in &marks {
                         if ui.selectable_label(*n == *name, n.as_str()).clicked() {
                             *name = n.clone();
@@ -3730,6 +4096,34 @@ mod tests {
         assert_eq!(h.state().session.doc.bookmarks().len(), 3, "one undo step");
     }
 
+    /// #1904: with no bookmarks the list says so instead of a blank box.
+    #[test]
+    fn the_bookmark_dialog_says_when_there_are_no_bookmarks() {
+        let mut app = app_with("Alpha beta gamma");
+        app.dialog = Dialog::open("bookmark", &mut app);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        let texts: Vec<String> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("The document has no bookmarks yet.")), "placeholder shown");
+    }
+
     /// Find, Replace and Go To are one dialog with three tabs (#712).
     #[test]
     fn find_replace_and_go_to_are_one_dialog() {
@@ -3810,7 +4204,9 @@ mod tests {
             ("tr", "İTALİK", "İtalik   —   Giriş › Yazı Tipi"),
             ("tr", "içindekiler", "İçindekiler Tablosu   —   Başvurular › İçindekiler Tablosu"),
             ("tr", "YAZI TİPİ", "İtalik   —   Giriş › Yazı Tipi"),
-            ("tr", "INSERT", "Tablo   —   Ekle › Tablolar"),
+            // Dozens of commands match a lone INSERT and the box shows 14, in registry order: the
+            // witness is an early one; Table is checked below, past the box's limit.
+            ("tr", "INSERT", "Bölünemez Boşluk   —   Ekle › Semboller"),
             ("tr", "INSERT.TABLE", "Tablo   —   Ekle › Tablolar"),
             ("tr", "FORMAT.ITALIC", "İtalik   —   Giriş › Yazı Tipi"),
             ("tr", "TABLE OF CONTENTS", "İçindekiler Tablosu   —   Başvurular › İçindekiler Tablosu"),
@@ -3829,6 +4225,9 @@ mod tests {
             assert_eq!(crate::i18n::lowercase("Iİıi"), if language == "tr" { "ıiıi" } else { "ii\u{307}ıi" });
         }
         assert_eq!(serde_json::to_value(&h.state().session.doc).unwrap(), before, "search does not change the document");
+        crate::i18n::set_current(crate::i18n::Lang::from_pref("tr"));
+        let reg = h.state().session.registry.clone();
+        assert!(command_matches(reg.get("insert.table").unwrap(), "INSERT"), "tr: INSERT finds Table");
         crate::i18n::set_current(crate::i18n::Lang::EN);
     }
 
@@ -4133,6 +4532,42 @@ mod tests {
         assert_eq!((c.small_caps, c.caps, c.size), (Some(false), Some(true), Some(14.0)));
     }
 
+    /// Kerning for fonts and its Points and above size set `w:kern` on the selection in one undo
+    /// step; off is 0. Text that differs shows the box neither on nor off, and OK leaves each
+    /// run's own kerning.
+    #[test]
+    fn font_dialog_sets_kerning_for_fonts() {
+        let mut app = app_with("Kerned plain");
+        let _ = app.run("select.all", json!({}));
+        let _ = app.run("format.set", json!({"props": {"kern": 0}}));
+        let kern = |app: &WordApp, off| app.session.doc.para_at(&Pos::body(0, 0)).and_then(|p| p.props_of_char(off).kern);
+        let Some(mut d) = Dialog::open("font", &mut app) else { panic!("no font dialog") };
+        let Dialog::Font { kern: on, kern_at, .. } = &mut d else { panic!() };
+        assert_eq!((*on, *kern_at), (Some(false), 12.0), "off, offering 12 pt");
+        *on = Some(true);
+        *kern_at = 16.0;
+        apply_font(&mut app, &d);
+        assert_eq!((kern(&app, 0), kern(&app, 7)), (Some(16.0), Some(16.0)));
+        let _ = app.run("edit.undo", json!({}));
+        assert_eq!(kern(&app, 0), Some(0.0), "one undo step");
+        let _ = app.run("edit.redo", json!({}));
+        let Some(mut d) = Dialog::open("font", &mut app) else { panic!() };
+        let Dialog::Font { kern: on, kern_at, .. } = &mut d else { panic!() };
+        assert_eq!((*on, *kern_at), (Some(true), 16.0));
+        *on = Some(false);
+        apply_font(&mut app, &d);
+        assert_eq!((kern(&app, 0), kern(&app, 7)), (Some(0.0), Some(0.0)));
+        let _ = app.run("select.text", json!({"text": "Kerned"}));
+        let _ = app.run("format.set", json!({"props": {"kern": 14}}));
+        let _ = app.run("select.all", json!({}));
+        let Some(mut d) = Dialog::open("font", &mut app) else { panic!() };
+        let Dialog::Font { kern: on, size, .. } = &mut d else { panic!() };
+        assert_eq!(*on, None, "mixed kerning shows neither on nor off");
+        *size = "13".into();
+        apply_font(&mut app, &d);
+        assert_eq!((kern(&app, 0), kern(&app, 7)), (Some(14.0), Some(0.0)), "each run keeps its kerning");
+    }
+
     /// #1178: Modify Style's font box is the ribbon's font box, so typing part of a name picks the
     /// installed family instead of storing the typed text.
     #[test]
@@ -4206,6 +4641,52 @@ mod tests {
         let after = h.ctx.memory(|m| m.area_rect(id)).expect("dialog is still open");
         assert!((after.min.x - (before.min.x - 200.0)).abs() <= 1.0, "moved left: {before:?} -> {after:?}");
         assert!((after.min.y - (before.min.y + 120.0)).abs() <= 1.0, "moved down: {before:?} -> {after:?}");
+    }
+
+    /// #1885: the close control is the whole box at the title bar's right end, as on a Windows
+    /// dialog, not only the ✕. A click 6 px from the window's right edge, mid title bar, closes
+    /// the dialog; one just under the title bar leaves it open; a drag that starts on the box
+    /// doesn't move the dialog. The box spans the title bar egui lays out.
+    #[test]
+    fn the_title_bar_close_box_is_the_whole_corner() {
+        fn press(h: &mut egui_kittest::Harness<'_, WordApp>, from: egui::Pos2, to: egui::Pos2) {
+            let button =
+                |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            h.event(egui::Event::PointerMoved(from));
+            h.step();
+            h.event(button(from, true));
+            h.step();
+            if to != from {
+                h.event(egui::Event::PointerMoved(to));
+                h.step();
+            }
+            h.event(button(to, false));
+            for _ in 0..4 {
+                h.step();
+            }
+        }
+        let mut app = app_with("Some text");
+        app.dialog = Dialog::open("wordCount", &mut app);
+        let mut h = app_harness(app);
+        for _ in 0..4 {
+            h.step();
+        }
+        let id = egui::Id::new(("dialog", "Word Count"));
+        let before = h.ctx.memory(|m| m.area_rect(id)).expect("dialog is open");
+        let bx = crate::window_close::close_rect(before, 1.0, crate::window_close::geometry(&h.ctx));
+        let title = h.ctx.read_response(id.with("__title_click")).expect("egui's title bar").rect;
+        assert!((bx.top() - before.top()).abs() <= 1.5 && (bx.bottom() - title.bottom()).abs() <= 1.5, "box {bx:?} spans the title bar {title:?}");
+        assert!(bx.width() >= 1.5 * bx.height() && bx.right() + 1.5 >= before.right(), "a wide box at the right end: {bx:?} in {before:?}");
+        let under = egui::pos2(before.right() - 6.0, bx.bottom() + 4.0);
+        press(&mut h, under, under);
+        assert!(h.state().dialog.is_some(), "a click under the title bar keeps the dialog");
+        let at = egui::pos2(before.right() - 6.0, bx.center().y);
+        press(&mut h, at, at + vec2(-150.0, 90.0));
+        assert!(h.state().dialog.is_some(), "a drag from the box isn't a click");
+        let after = h.ctx.memory(|m| m.area_rect(id)).expect("dialog is still open");
+        assert!((after.min - before.min).length() <= 1.0, "the box isn't a drag handle: {before:?} -> {after:?}");
+        press(&mut h, at, at);
+        assert!(h.state().dialog.is_none(), "a click in the box, away from the X, closes the dialog");
     }
 
     fn app_harness(app: WordApp) -> egui_kittest::Harness<'static, WordApp> {
@@ -4501,5 +4982,48 @@ mod tests {
             h.step();
         }
         assert_eq!(wordcraft_engine::cmd::page::sect(&h.state().session).valign, PageVAlign::Justify);
+    }
+
+    /// #1230: Page Setup's Different first page check box gives the title page no page number
+    /// (its footer is the empty first-page one), in one undo step.
+    #[test]
+    fn page_setup_different_first_page_leaves_the_title_page_unnumbered() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with("Title");
+        app.run("insert.pageBreak", json!({})).unwrap();
+        app.run("text.insert", json!({"text": "Body"})).unwrap();
+        app.run("insert.pageNumber", json!({"position": "bottom", "align": "center"})).unwrap();
+        let _ = app.run("insert.closeHeader", json!({}));
+        assert!(app.session.layout().pages[0].footer_story.is_some(), "page 1 is numbered");
+        app.dialog = Dialog::open("pageSetup", &mut app);
+        assert!(matches!(app.dialog, Some(Dialog::PageSetup { first_page: false, odd_even: false, .. })));
+        let depth = app.session.undo_depth();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        assert!(h.query_by_label("Different Odd & Even Pages").is_some(), "the dialog has both check boxes");
+        h.get_by_label("Different First Page").click();
+        for _ in 0..2 {
+            h.step();
+        }
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "OK").click();
+        for _ in 0..4 {
+            h.step();
+        }
+        let s = &mut h.state_mut().session;
+        assert!(wordcraft_engine::cmd::page::sect(s).title_page);
+        assert!(!s.doc.settings.even_odd_headers, "left as it was");
+        assert_eq!(s.undo_depth(), depth + 1);
+        let pages = &s.layout().pages;
+        assert!(pages[0].footer_story.is_none(), "the title page shows no page number");
+        assert!(pages[1].footer_story.is_some(), "the next page keeps its number");
     }
 }

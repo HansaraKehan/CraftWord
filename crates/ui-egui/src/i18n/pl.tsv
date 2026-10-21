@@ -431,6 +431,10 @@
 	More templates →	Więcej szablonów →
 	Move or Resize	Przenieś lub zmień rozmiar
 	Multilevel List	Lista wielopoziomowa
+	Multilevel List Library	Biblioteka list wielopoziomowych
+	Article I.	Artykuł I.
+	Chapter 1	Rozdział 1
+	Section 1.01	Sekcja 1.01
 	Multiple Pages	Wiele stron
 	Name (A–Z)	Nazwa (A–Z)
 	Name:	Nazwa:
@@ -692,6 +696,8 @@
 	Space before/after:	Odstęp przed/po:
 	Spacing	Odstępy
 	Spacing (pt):	Odstępy (pt):
+	Kerning for fonts:	Kerning czcionek:
+	Points and above	pkt i więcej
 	Speech	Mowa
 	Spelling & Grammar	Pisownia i gramatyka
 	Spelling &\nGrammar	Pisownia\ni gramatyka
@@ -1329,6 +1335,7 @@
 	This font has no characters to show.	Ta czcionka nie zawiera znaków do pokazania.
 	This point forward	Od tego miejsca
 	This section	Ta sekcja
+	Selected text	Zaznaczony tekst
 	Title from the document properties	Tytuł z właściwości dokumentu
 	Total	Razem
 	Track Changes Options	Opcje śledzenia zmian
@@ -1407,6 +1414,8 @@
 	Put the default commands back on the Quick Access Toolbar?	Przywrócić domyślne polecenia na pasku narzędzi Szybki dostęp?
 	Remove every custom tab and group and show all tabs again?	Usunąć wszystkie niestandardowe karty i grupy oraz ponownie pokazać wszystkie karty?
 	Remove from Quick Access Toolbar	Usuń z paska narzędzi Szybki dostęp
+	Hide Quick Access Toolbar	Ukryj pasek narzędzi Szybki dostęp
+	Show Quick Access Toolbar	Pokaż pasek narzędzi Szybki dostęp
 	Rename…	Zmień nazwę…
 	Reset…	Resetuj…
 	Ribbon	Wstążka
@@ -1578,6 +1587,7 @@
 	Issue	Numer
 	Italian	Włoski
 	Croatian	Chorwacki
+	Indonesian	Indonezyjski
 	Japanese	Japoński
 	Journal	Czasopismo naukowe
 	Korean	Koreański
@@ -1886,6 +1896,8 @@
 	Move Up	Przenieś w górę
 	Move with Text	Przenoś z tekstem
 	Moves	Przeniesienia
+	Moved from:	Przeniesiono z:
+	Moved to:	Przeniesiono do:
 	New comments and tracked changes are recorded under this name and these initials.	Nowe komentarze i śledzone zmiany są zapisywane pod tą nazwą i tymi inicjałami.
 	New document	Nowy dokument
 	New word	Nowy wyraz
@@ -2004,6 +2016,7 @@
 	Show changes in:	Pokaż zmiany w:
 	Show the mini toolbar when text is selected	Pokazuj minipasek narzędzi po zaznaczeniu tekstu
 	Showing the first {count} items.	Pokazano pierwsze elementy: {count}.
+	No items to show.	Brak elementów do wyświetlenia.
 	Shows a tree: each item below the item it belongs to.	Pokazuje drzewo: każdy element pod elementem, do którego należy.
 	Shows items around a central idea: the first item is the centre.	Pokazuje elementy wokół głównej idei: pierwszy element jest w środku.
 	Shows items of equal weight as blocks in rows.	Pokazuje równorzędne elementy jako bloki w wierszach.
@@ -2135,6 +2148,10 @@
 	Contains	Zawiera
 	Does not contain	Nie zawiera
 	{count} of {total} recipients will be merged.	Adresaci do scalenia: {count} z {total}.
+	Find in list:	Znajdź na liście:
+	Any field	Dowolne pole
+	Matches: {count}	Dopasowania: {count}
+	Show only records that will be merged	Pokaż tylko rekordy, które zostaną scalone
 	Book Title	Tytuł książki
 	Category	Kategoria
 	Contributors	Współtwórcy
@@ -2569,6 +2586,21 @@ preview	Title	Tytuł
 	Suggested	Sugerowane
 	Set Proofing Language…	Ustaw język sprawdzania…
 	Language Preferences…	Preferencje językowe…
+	APA	APA
+	Chicago	Chicago
+	GB/T 7714	GB/T 7714
+	GOST (name sort)	GOST (sortowanie według nazwiska)
+	GOST (title sort)	GOST (sortowanie według tytułu)
+	Harvard (Anglia)	Harvard (Anglia)
+	IEEE	IEEE
+	ISO 690 (author-date)	ISO 690 (autor–data)
+	ISO 690 (numerical)	ISO 690 (numeryczny)
+	MLA	MLA
+	SIST02	SIST02
+	Turabian	Turabian
+	Large	Duży
+	Limit and	Granica i
+	Log	Logarytm
 	Printer	Drukarka
 	Select a printer	Wybierz drukarkę
 	Refresh printers	Odśwież drukarki
@@ -2622,3 +2654,53 @@ preview	Title	Tytuł
 # Reading Mode column widths (#1040)
 	Narrow	Wąska
 	Medium	Średnia
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Scal komórki przed podziałem
+	Table size	Rozmiar tabeli
+	AutoFit behavior	Autodopasowanie
+	Initial column width:	Początkowa szerokość kolumn:
+	AutoFit to contents	Dopasuj do zawartości
+	AutoFit to window	Dopasuj do okna
+	Separate text at	Oddziel tekst przy
+	Commas	Przecinki
+	Other:	Inny:
+	The number must be between 1 and {max}.	Liczba musi być z zakresu od 1 do {max}.
+	The measurement must be between {min} and {max}.	Miara musi być z zakresu od {min} do {max}.
+	Recently Used Fonts	Ostatnio używane czcionki
+	All Fonts	Wszystkie czcionki
+	Spike	Zbieracz
+	Insert Spike	Wstaw ze zbieracza
+# Add Font status (#1789)
+	Added 1 font	Dodano 1 czcionkę
+	Added {n} fonts	Dodano czcionek: {n}
+	{added}; {count} couldn't be read: {names}	{added}; nie udało się odczytać ({count}): {names}
+	{names} and {n} more	{names} i {n} więcej
+	{added}; {n} skipped (limit {max})	{added}; pominięto: {n} (limit {max})
+	nothing is selected	nic nie jest zaznaczone
+	select a picture or shape first	najpierw zaznacz obraz lub kształt
+	select recipients first	najpierw wybierz adresatów
+	select two or more pictures or shapes first (Shift+click)	zaznacz co najmniej dwa obrazy lub kształty (Shift+kliknięcie)
+	text boxes can't go inside a text box	pola tekstowego nie można umieścić w polu tekstowym
+	the cursor isn't in a table	kursor nie jest w tabeli
+	{name} options	{name}: opcje
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	W tekście
+	In margin	Na marginesie
+	Drop Cap Options…	Opcje inicjału…
+	Lines to drop:	Wysokość w wierszach:
+	Distance from text:	Odległość od tekstu:
+	Distance from text	Odległość od tekstu
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	akapit jest pusty
+	the paragraph starts with a space	akapit zaczyna się od spacji
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Zablokuj proporcje
+	Relative to original picture size	Względem oryginalnego rozmiaru obrazu
+	Original size	Rozmiar oryginalny
+	{width} × {height} pixels	{width} × {height} pikseli
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Wpisz rozmiar w dowolnej jednostce, np. 5 cm lub 300 px. Druga strona dopasuje się, więc obraz zachowa proporcje.
+
+	Import…	Importuj…

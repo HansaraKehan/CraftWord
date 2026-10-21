@@ -52,7 +52,7 @@ and set `WORDCRAFT_CONTROL_KEY` to that app's key.
 
 | Method | Params | Result |
 |---|---|---|
-| `engine.execute` | `command`, `params` | the command's result (any id from `engine.commands`, including UI commands `ui.tab`, `ui.dialog` (`{"name": dialog, "part"?: table style part}`; `part` opens New / Modify Table Style (`newTableStyle` / `modifyTableStyle`) on that part: `wholeTable`, `headerRow`, `firstColumn`, `bandedRows`, `nwCell`… as `table.modifyStyle` names them), `ui.backstage`, `ui.zotero.*` (see `docs/zotero.md`), `ui.language` (`{"value": "auto"|"en"|"zh-hans"|"zh-hant"|"ja"|"pt-br"|"es"|"uk"|"sr"|"sr-latn"|"et"|"tr"|"ru"|"pl"|"de"|"it"|"cs"|"hu"|"fr"}`), `ui.theme` (`{"value": "system"|"light"|"dark"}`; `system` follows the OS appearance, light when it reports none), `ui.interfaceSize` (`{"value": "auto"}` or `{"percent": 50–300}`, clamped; no value reads it; `auto` keeps the system display scale, a percentage is absolute, so 100 is one screen pixel per point (#822); the result's `percent` is the size drawn at and `auto` whether it follows the system; document zoom stays `view.zoom`), `ui.animations` (`{"value": "system"|"on"|"off"}`; no value reads it; `system` follows the system's animation setting, which the desktop app reads on Windows, macOS, Linux and the BSDs and the web app from `prefers-reduced-motion`, and means on where the system doesn't say; the result's `enabled` is what the setting comes to and `system` what the system reports, `null` when it doesn't say), `ui.fileBrowser` (desktop: `{"purpose": "document"|"picture"|"recipients"|"save"}` opens WordCraft's own file browser, for when the system file dialog doesn't show up, #576), `ui.caretAnimation` (`{"value": true|false}`; no value reads it; off, the caret jumps and blinks on and off instead of gliding and fading), `ui.startScreen` (`{"value": true|false}`; no value reads it; on, the default, the desktop and web apps start on File › Home when launched with nothing to open, #766), `ui.alignmentGuides` (`{"value": true|false}`; no value reads it; on, the default, moving a picture or shape snaps it to the page, the margins and other objects, with guide lines while dragging; Alt moves freely)…) |
+| `engine.execute` | `command`, `params` | the command's result (any id from `engine.commands`, including UI commands `ui.tab`, `ui.dialog` (`{"name": dialog, "part"?: table style part}`; `part` opens New / Modify Table Style (`newTableStyle` / `modifyTableStyle`) on that part: `wholeTable`, `headerRow`, `firstColumn`, `bandedRows`, `nwCell`… as `table.modifyStyle` names them), `ui.backstage`, `ui.zotero.*` (see `docs/zotero.md`), `ui.language` (`{"value": "auto"|"en"|"zh-hans"|"zh-hant"|"ja"|"pt-br"|"es"|"uk"|"sr"|"sr-latn"|"et"|"tr"|"ru"|"pl"|"de"|"it"|"cs"|"hu"|"fr"}`), `ui.theme` (`{"value": "system"|"light"|"dark"}`; `system` follows the OS appearance, light when it reports none), `ui.interfaceSize` (`{"value": "auto"}` or `{"percent": 50–300}`, clamped; no value reads it; `auto` keeps the system display scale, a percentage is absolute, so 100 is one screen pixel per point (#822); the result's `percent` is the size drawn at and `auto` whether it follows the system; document zoom stays `view.zoom`), `ui.animations` (`{"value": "system"|"on"|"off"}`; no value reads it; `system` follows the system's animation setting, which the desktop app reads on Windows, macOS, Linux and the BSDs and the web app from `prefers-reduced-motion`, and means on where the system doesn't say; the result's `enabled` is what the setting comes to and `system` what the system reports, `null` when it doesn't say), `ui.fileBrowser` (desktop: `{"purpose": "document"|"picture"|"recipients"|"save"}` opens WordCraft's own file browser, for when the system file dialog doesn't show up, #576), `ui.caretAnimation` (`{"value": true|false}`; no value reads it; off, the caret jumps and blinks on and off instead of gliding and fading), `ui.startScreen` (`{"value": true|false}`; no value reads it; on, the default, the desktop and web apps start on File › Home when launched with nothing to open, #766), `ui.alignmentGuides` (`{"value": true|false}`; no value reads it; on, the default, moving a picture or shape snaps it to the page, the margins and other objects, with guide lines while dragging; Alt moves freely), `ui.quickAccessToolbar` (`{"value": true|false}`; no value toggles it; false takes the Quick Access Toolbar out of the title bar, as its menu's Hide Quick Access Toolbar does, and true brings it back, #1945)…) |
 | `engine.execute` | `command`, `params` | the command's result (any id from `engine.commands`, including UI commands `ui.tab`, `ui.dialog` (`{"name": dialog, "part"?: table style part}`; `part` opens New / Modify Table Style (`newTableStyle` / `modifyTableStyle`) on that part: `wholeTable`, `headerRow`, `firstColumn`, `bandedRows`, `nwCell`… as `table.modifyStyle` names them), `ui.backstage`, `ui.zotero.*` (see `docs/zotero.md`), `ui.language` (`{"value": "auto"|"en"|"zh-hans"|"zh-hant"|"ja"|"pt-br"|"es"|"uk"|"sr"|"sr-latn"|"et"|"tr"|"ru"}`), `ui.theme` (`{"value": "system"|"light"|"dark"}`; `system` follows the OS appearance, light when it reports none), `ui.interfaceSize` (`{"value": "auto"}` or `{"percent": 50–300}`, clamped; no value reads it; `auto` keeps the system display scale, a percentage is absolute, so 100 is one screen pixel per point (#822); the result's `percent` is the size drawn at and `auto` whether it follows the system; document zoom stays `view.zoom`), `ui.animations` (`{"value": "system"|"on"|"off"}`; no value reads it; `system` follows the system's animation setting, which the desktop app reads on Windows, macOS, Linux and the BSDs and the web app from `prefers-reduced-motion`, and means on where the system doesn't say; the result's `enabled` is what the setting comes to and `system` what the system reports, `null` when it doesn't say), `ui.fileBrowser` (desktop: `{"purpose": "document"|"picture"|"recipients"|"save"}` opens WordCraft's own file browser, for when the system file dialog doesn't show up, #576), `ui.caretAnimation` (`{"value": true|false}`; no value reads it; off, the caret jumps and blinks on and off instead of gliding and fading), `ui.contextMenu` (opens the page's context menu below the caret, as Shift+F10 does)…) |
 | `engine.commands` | — | every command: id, label, location, shortcut, params, enabled |
 | `document.inspect` | `text?` | blocks (text, style, runs, lists, tables), parts, sections, selection, pages |
@@ -76,6 +76,17 @@ in [MCP server](mcp.md#character-and-paragraph-properties).
 
 Positions are `{"story": "body" | {"part": n}, "path": [block, row, cell, block, …], "off": byteOffset}`.
 
+### Keyboard and text input
+
+`ui.key` and `ui.text` go to this window's focused widget even when another app is in front
+(#2420). A focused Find field receives the text; a document receives it only while its canvas
+owns keyboard focus. Shortcuts, dialogs and document protection still apply. These methods do
+not activate the native window. `ui.focus` separately requests native activation.
+
+The `{"queued": true}` reply acknowledges the input queue, not a completed edit. Input is applied
+on subsequent UI frames. Inspect the resulting document or widget state before continuing with
+an operation that depends on it; do not replay an edit simply because its effect is not immediate.
+
 ### Closing the document
 
 `engine.execute` with `file.close` never shows the Save / Don't Save / Cancel prompt. On a
@@ -83,7 +94,8 @@ document with unsaved changes it replies with an error (the app keeps running an
 stay); save first (`file.save`), or pass `{"force": true}` to discard the changes and close.
 The bare form `{"method": "file.close", "force": true}` (a method name that is a command id) is
 guarded the same way, and only a boolean `true` counts as `force`. A document without unsaved
-changes closes at once (#1268).
+changes closes at once (#1268). Closing closes the document, not the app: the window stays and
+shows no page, and `file.new` or `file.open` goes on from there (#1712).
 
 ### Native printing
 
@@ -100,7 +112,10 @@ and check `status`/`detail`. The browser keeps its own print hook. PDF export re
 `parity`, `copies`, `collate`). Native printing renders the selected pages once and passes
 copies/collation to the spooler; the browser and `file.printPdf` keep copies in the PDF.
 Omitting native `copies` uses the configured `ui.printSettings` value. `collate` defaults to
-File › Print's setting; invalid ranges submit no job.
+File › Print's setting; invalid ranges submit no job. `paper` (`none`, or a Layout › Size name
+such as `Letter`, `Legal`, `A4`) is Scale to paper size (#2108): every page is scaled onto that
+paper and centred, and native jobs ask the spooler for that `media`; the document's page size is
+unchanged. `file.printPdf` takes it too; an unknown paper submits no job.
 
 `engine.commands {"search":"print"}` lists the engine print commands and the app-owned
 `ui.printSettings`, `ui.printSubmit`, and legacy `ui.print` alias, with current enablement

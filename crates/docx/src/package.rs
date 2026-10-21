@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read, Write};
+use std::sync::Arc;
 
 use crate::DocxError;
 use crate::xml::{self, El};
@@ -44,6 +45,38 @@ pub mod rt {
     pub const DIAGRAM_QUICK_STYLE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramQuickStyle";
     pub const DIAGRAM_COLORS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramColors";
     pub const CUSTOM_XML: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml";
+    pub const GLOSSARY: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/glossaryDocument";
+}
+
+/// Content type of a glossary document part (ECMA-376 Part 1 §11.3.8).
+pub const GLOSSARY_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xml";
+/// `Document::passthrough` key: a fingerprint of `Document::glossary` as read, so a save can tell
+/// an untouched glossary (written back verbatim) from an edited one (written from the model).
+/// Not a package part: WordCraft's own bookkeeping.
+pub const GLOSSARY_READ: &str = "wordcraft:glossary.read";
+/// Most building blocks read from one glossary.
+pub const MAX_GLOSSARY_ENTRIES: usize = 10_000;
+/// The glossary entry types `w:type` takes (ST_DocPartType); others aren't kept.
+pub const GLOSSARY_TYPES: [&str; 7] = ["none", "normal", "autoExp", "toolbar", "speller", "formFld", "bbPlcHdr"];
+/// The insertion behaviours `w:behavior` takes (ST_DocPartBehavior); others aren't kept.
+pub const GLOSSARY_BEHAVIORS: [&str; 3] = ["content", "p", "pg"];
+
+/// A fingerprint of `glossary` (FNV-1a over its debug form): stable across runs and builds that
+/// keep the model's shape, and cheap (nothing is allocated).
+pub fn glossary_fingerprint(glossary: &[wordcraft_doc::BuildingBlock]) -> String {
+    struct Fnv(u64);
+    impl std::fmt::Write for Fnv {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for b in s.bytes() {
+                self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+            Ok(())
+        }
+    }
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    // Writing into `Fnv` never fails.
+    let _ = std::fmt::Write::write_fmt(&mut h, format_args!("{glossary:?}"));
+    format!("{:016x}", h.0)
 }
 
 /// `Document::passthrough` key for a macro project, kept as opaque bytes (never parsed or run).
@@ -154,9 +187,10 @@ pub fn rel_is(t: &str, full: &str) -> bool {
     t == full || tail(t) == tail(full)
 }
 
-/// The decompressed parts of a package (bounded).
+/// The decompressed parts of a package (bounded). Shared, so a part the document keeps as it is (a
+/// picture, an embedded object) is handed over rather than copied.
 pub struct Package {
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, Arc<Vec<u8>>>,
 }
 
 impl Package {
@@ -198,7 +232,7 @@ impl Package {
                 return Err(DocxError::Limit(format!("part {name} decompresses past the size limit")));
             }
             total = total.saturating_add(buf.len() as u64);
-            files.insert(name, buf);
+            files.insert(name, Arc::new(buf));
         }
         Ok(Package { files })
     }
@@ -206,16 +240,22 @@ impl Package {
     /// A package from parts already in memory (a Flat OPC file, a converted document), by part
     /// name without the leading `/`.
     pub fn from_parts(files: BTreeMap<String, Vec<u8>>) -> Package {
-        Package { files }
+        Package { files: files.into_iter().map(|(name, bytes)| (name, Arc::new(bytes))).collect() }
     }
 
     /// Part bytes by name (leading `/` ignored; case-insensitive fallback).
     pub fn get(&self, name: &str) -> Option<&[u8]> {
+        self.get_shared(name).map(|v| v.as_slice())
+    }
+
+    /// [`Package::get`], as the shared bytes themselves: for a part the document keeps whole, which
+    /// then costs no copy (a picture document's pictures used to be held twice while it opened).
+    pub fn get_shared(&self, name: &str) -> Option<&Arc<Vec<u8>>> {
         let n = name.trim_start_matches('/');
         if let Some(v) = self.files.get(n) {
             return Some(v);
         }
-        self.files.iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v.as_slice())
+        self.files.iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v)
     }
 
     pub fn xml(&self, name: &str) -> Result<Option<El>, DocxError> {
@@ -398,6 +438,27 @@ mod tests {
             Err(_) => {}
             Ok(p) => assert!(p.get("a.xml").is_none_or(|b| b.len() < 1024)),
         }
+    }
+
+    #[test]
+    fn the_document_shares_its_pictures_with_the_package() {
+        // Each picture was copied out of the package, so a picture document held its pictures
+        // twice while it opened, and left the package's copies behind as freed memory.
+        let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture""#;
+        let document = format!(
+            r#"<w:document {ns}><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="635000" cy="635000"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rIdImg"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#
+        );
+        let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/pic.png"/></Relationships>"#;
+        let z = zip_of(&[
+            ("word/document.xml", document.into_bytes()),
+            ("word/_rels/document.xml.rels", rels.as_bytes().to_vec()),
+            ("word/media/pic.png", b"\x89PNG picture bytes".to_vec()),
+        ]);
+        let pkg = Package::open(&z).unwrap();
+        let doc = crate::read::read_opened(&pkg).unwrap();
+        let held = doc.media.values().next().expect("the picture is read");
+        assert!(Arc::ptr_eq(held, pkg.get_shared("word/media/pic.png").unwrap()), "the same bytes, not a copy");
+        assert_eq!(pkg.get("/WORD/media/PIC.png"), Some(&b"\x89PNG picture bytes"[..]), "lookups are unchanged");
     }
 
     #[test]

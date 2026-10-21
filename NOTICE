@@ -76,6 +76,11 @@ list (author, source, license) is in ATTRIBUTION.md.
 - All UI icons are drawn in code (crates/ui-egui/src/icons.rs) and are original work, MIT OR Apache-2.0.
 
 Rust dependencies (egui, eframe, vello_cpu, skrifa, harfrust, krilla, quick-xml, zip, image, …)
-are permissively licensed (MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
+are permissively licensed (MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io or pinned Git sources.
+The craft-pdf writer and Krilla 0.8.2 backend are pinned to storytold/craft-libs revision
+c3487320b2d1de657b860b3c8abb44e1f2b32bd8. The backend retains its MIT OR Apache-2.0 licensing
+and upstream bundled material; see that revision's licenses/pdf-writer/ and ATTRIBUTION.md.
+The backend patch prevents finalization during an unwind and rejects a writer after failed
+cleanup. WordCraft enables only writing; PDF import and its image decoders are not enabled.
 
 No Microsoft, Adobe, Avid or Autodesk icons, images, templates or artwork are included.

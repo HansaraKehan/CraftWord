@@ -70,6 +70,26 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("view.multiplePages", "Multiple Pages", "View › Zoom", |s, _| zoom(s, &json!({"value": "multiplePages"}))).pure(),
         CommandSpec::new("view.pageWidth", "Page Width", "View › Zoom", |s, _| zoom(s, &json!({"value": "pageWidth"}))).pure(),
         CommandSpec::new("view.darkMode", "Switch Modes", "View › Dark Mode", |s, v| toggle(s, v, |x| &mut x.dark_mode)).pure(),
+        // The interface theme itself (light, dark, or follow the OS), next to dark pages (#1861).
+        // The session can't paint: like split and new windows, this queues a request the front
+        // end applies to its theme setting (which persists per user). Without a value it toggles
+        // light and dark, as the manual switch did.
+        CommandSpec::new("view.interfaceTheme", "Interface Theme", "View › Dark Mode", |s, v| match v.get("value") {
+            None => {
+                s.ui_requests.push(json!({"toggle": "interfaceTheme"}));
+                Ok(json!({"value": "toggle"}))
+            }
+            Some(Value::String(name)) => match name.as_str() {
+                "light" | "dark" | "system" => {
+                    s.ui_requests.push(json!({"interfaceTheme": name}));
+                    Ok(json!({"value": name}))
+                }
+                _ => Err(CmdError::Params("interface theme: light|dark|system".into())),
+            },
+            _ => Err(CmdError::Params("interface theme: light|dark|system".into())),
+        })
+        .params(r#"{"value"?: "light" | "dark" | "system"; without it, toggles light and dark}"#)
+        .pure(),
         CommandSpec::new("view.stylesPane", "Styles Pane", "Home › Styles", |s, v| toggle(s, v, |x| &mut x.styles_pane)).pure(),
         CommandSpec::new("view.commentsPane", "Comments Pane", "Review › Comments", |s, v| toggle(s, v, |x| &mut x.comments_pane)).pure(),
         CommandSpec::new("view.accessibilityPane", "Accessibility Pane", "Review › Accessibility", |s, v| {

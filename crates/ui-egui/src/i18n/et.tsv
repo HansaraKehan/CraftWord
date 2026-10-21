@@ -459,6 +459,10 @@
 	More templates →	Veel malle →
 	Move or Resize	Teisalda või muuda suurust
 	Multilevel List	Mitmetasemeline loend
+	Multilevel List Library	Mitmetasemeliste loendite teek
+	Article I.	Artikkel I.
+	Chapter 1	Peatükk 1
+	Section 1.01	Jaotis 1.01
 	Multiple Pages	Mitu lehte
 	Name (A–Z)	Nimi (A–Z)
 	Name:	Nimi:
@@ -745,6 +749,8 @@
 	Spaces	Tühikud
 	Spacing	Vahe
 	Spacing (pt):	Vahe (pt):
+	Kerning for fonts:	Fondi märgipaaride tihendus:
+	Points and above	punkti ja rohkem
 	Speech	Kõne
 	Spelling	Õigekiri
 	Spelling & Grammar	Õigekiri ja grammatika
@@ -1331,6 +1337,7 @@
 	Apply to:	Rakenda:
 	Whole document	Kogu dokument
 	This section	See jaotis
+	Selected text	Valitud tekst
 	Fill	Täide
 	Setting:	Säte:
 	3-D	Ruumiline
@@ -1502,6 +1509,8 @@
 	Math AutoCorrect	Matemaatika automaatparandus
 	More >>	Rohkem >>
 	Moves	Teisaldused
+	Moved from:	Teisaldatud kohast:
+	Moved to:	Teisaldatud kohta:
 	New document	Uus dokument
 	No changes (read only)	Muudatusi pole (kirjutuskaitstud)
 	Only allow this kind of editing:	Luba ainult seda tüüpi muutmist:
@@ -1572,6 +1581,8 @@
 	Put the default commands back on the Quick Access Toolbar?	Kas panna vaikekäsud kiirpääsuribale tagasi?
 	Remove every custom tab and group and show all tabs again?	Kas eemaldada kõik kohandatud vahekaardid ja rühmad ning kuvada uuesti kõik vahekaardid?
 	Remove from Quick Access Toolbar	Eemalda kiirpääsuribalt
+	Hide Quick Access Toolbar	Peida kiirpääsuriba
+	Show Quick Access Toolbar	Kuva kiirpääsuriba
 	Rename…	Nimeta ümber…
 	Reset…	Lähtesta…
 	Ribbon	Lint
@@ -2079,6 +2090,7 @@
 	Hyphenation zone:	Poolitusala:
 	Italian	Itaalia
 	Croatian	Horvaadi
+	Indonesian	Indoneesia
 	Japanese	Jaapani
 	Korean	Korea
 	Limit consecutive hyphens to:	Järjestikuseid poolitusi kuni:
@@ -2162,6 +2174,10 @@
 	Contains	Sisaldab
 	Does not contain	Ei sisalda
 	{count} of {total} recipients will be merged.	Ühendatavaid adressaate: {count} / {total}.
+	Find in list:	Otsi loendist:
+	Any field	Mis tahes väli
+	Matches: {count}	Vasteid: {count}
+	Show only records that will be merged	Näita ainult ühendatavaid kirjeid
 	Take the last match on the page	Võta lehe viimane vaste
 	Show its list number	Näita selle loendinumbrit
 	Show its number relative to this field	Näita selle numbrit selle välja suhtes
@@ -2267,3 +2283,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	Kitsas
 	Medium	Keskmine
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Ühenda lahtrid enne tükeldamist
+	Table size	Tabeli suurus
+	AutoFit behavior	Automaatne sobitamine
+	Initial column width:	Veeru algne laius:
+	AutoFit to contents	Sobita sisuga
+	AutoFit to window	Sobita aknaga
+	Separate text at	Eralda tekst kohas
+	Commas	Komad
+	Other:	Muu:
+	The number must be between 1 and {max}.	Arv peab olema vahemikus 1 kuni {max}.
+	The measurement must be between {min} and {max}.	Mõõt peab olema vahemikus {min} kuni {max}.
+	Recently Used Fonts	Viimati kasutatud fondid
+	All Fonts	Kõik fondid
+	Spike	Koguja
+	Insert Spike	Lisa kogujast
+# Add Font status (#1789)
+	Added 1 font	Lisati 1 font
+	Added {n} fonts	Lisati {n} fonti
+	{added}; {count} couldn't be read: {names}	{added}; {count} ei õnnestunud lugeda: {names}
+	{names} and {n} more	{names} ja veel {n}
+	{added}; {n} skipped (limit {max})	{added}; {n} jäeti vahele (piir {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	Tekstis
+	In margin	Veerisel
+	Drop Cap Options…	Süvisinitsiaali suvandid…
+	Lines to drop:	Ridade arv:
+	Distance from text:	Kaugus tekstist:
+	Distance from text	Kaugus tekstist
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Lukusta kuvasuhe
+	Relative to original picture size	Pildi algsuuruse suhtes
+	Original size	Algne suurus
+	{width} × {height} pixels	{width} × {height} pikslit
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Sisesta suurus mis tahes ühikus, näiteks 5 cm või 300 px. Teine külg muutub kaasa, nii et pilt säilitab oma proportsioonid.
+
+	Import…	Impordi…

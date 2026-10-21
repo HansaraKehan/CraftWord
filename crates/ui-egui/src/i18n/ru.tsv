@@ -22,7 +22,7 @@
 	Accept	Принять
 	Accept All Changes	Принять все изменения
 	Accept This Change	Принять это изменение
-	Accessibility	Специальные возможности
+	Accessibility	Доступность
 	Add	Добавить
 	Add a comment	Добавить комментарий
 	Add a Table	Добавить таблицу
@@ -442,6 +442,10 @@
 	Modify Style	Изменить стиль
 	Modify…	Изменить…
 	Multilevel List	Многоуровневый список
+	Multilevel List Library	Библиотека многоуровневых списков
+	Article I.	Статья I.
+	Chapter 1	Глава 1
+	Section 1.01	Раздел 1.01
 	Multiple Pages	Несколько страниц
 	Name (A–Z)	Имя (А–Я)
 	Name:	Имя:
@@ -693,6 +697,8 @@
 	Space before/after:	Интервал перед/после:
 	Spacing	Интервал
 	Spacing (pt):	Интервал (пт):
+	Kerning for fonts:	Кернинг шрифтов:
+	Points and above	пт и более
 	Speech	Речь
 	Spelling & Grammar	Орфография и грамматика
 	Spelling &\nGrammar	Орфография\nи грамматика
@@ -1620,6 +1626,7 @@ preview	Title	Пример
 	Apply to:	Применить к:
 	Whole document	Ко всему документу
 	This section	К этому разделу
+	Selected text	К выделенному тексту
 	Fill	Заливка
 	Setting:	Тип:
 	3-D	Объёмная
@@ -1766,6 +1773,8 @@ preview	Title	Пример
 	Customize Ribbon	Настройка ленты
 	Add to Quick Access Toolbar	Добавить на панель быстрого доступа
 	Remove from Quick Access Toolbar	Удалить с панели быстрого доступа
+	Hide Quick Access Toolbar	Скрыть панель быстрого доступа
+	Show Quick Access Toolbar	Показать панель быстрого доступа
 	Customize the Ribbon…	Настроить ленту…
 	Customize Quick Access Toolbar…	Настроить панель быстрого доступа…
 	More Commands…	Другие команды…
@@ -2085,6 +2094,8 @@ preview	Title	Пример
 	Math AutoCorrect	Автозамена математическими символами
 	More >>	Больше >>
 	Moves	Перемещения
+	Moved from:	Перемещено из:
+	Moved to:	Перемещено в:
 	New document	Новый документ
 	No changes (read only)	Без изменений (только чтение)
 	Only allow this kind of editing:	Разрешить только такой способ редактирования:
@@ -2187,6 +2198,7 @@ preview	Title	Пример
 	{name} already exists. Choose Save again to replace it.	{name} уже существует. Чтобы заменить его, снова выберите «Сохранить».
 	This folder can't be read: {error}	Не удаётся прочитать папку: {error}
 	Showing the first {count} items.	Показаны первые элементы: {count}.
+	No items to show.	Нет элементов для показа.
 	File name:	Имя файла:
 	Browse in WordCraft…	Обзор в WordCraft…
 	Open a file with WordCraft's own browser when the system file dialog doesn't appear.	Открыть файл во встроенном обозревателе WordCraft, если системное диалоговое окно выбора файлов не появляется.
@@ -2380,6 +2392,7 @@ preview	Title	Пример
 	Hyphenation zone:	Зона переноса слов:
 	Italian	Итальянский
 	Croatian	Хорватский
+	Indonesian	Индонезийский
 	Japanese	Японский
 	Korean	Корейский
 	Limit consecutive hyphens to:	Максимум последовательных переносов:
@@ -2511,6 +2524,10 @@ preview	Title	Пример
 	Contains	Содержит
 	Does not contain	Не содержит
 	{count} of {total} recipients will be merged.	Получателей для слияния: {count} из {total}.
+	Find in list:	Найти в списке:
+	Any field	Любое поле
+	Matches: {count}	Совпадений: {count}
+	Show only records that will be merged	Показывать только записи для слияния
 	Take the last match on the page	Брать последнее совпадение на странице
 	Show its list number	Показывать его номер в списке
 	Show its number relative to this field	Показывать его номер относительно этого поля
@@ -2630,3 +2647,53 @@ preview	Title	Пример
 # Reading Mode column widths (#1040)
 	Narrow	Узкая
 	Medium	Средняя
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Объединить ячейки перед разбиением
+	Table size	Размер таблицы
+	AutoFit behavior	Автоподбор ширины столбцов
+	Initial column width:	Исходная ширина столбцов:
+	AutoFit to contents	Автоподбор по содержимому
+	AutoFit to window	Автоподбор по ширине окна
+	Separate text at	Разделитель
+	Commas	Запятые
+	Other:	Другой:
+	The number must be between 1 and {max}.	Число должно быть от 1 до {max}.
+	The measurement must be between {min} and {max}.	Размер должен быть от {min} до {max}.
+	Recently Used Fonts	Недавно использованные шрифты
+	All Fonts	Все шрифты
+	Spike	Копилка
+	Insert Spike	Вставить из копилки
+# Add Font status (#1789)
+	Added 1 font	Добавлен 1 шрифт
+	Added {n} fonts	Добавлено шрифтов: {n}
+	{added}; {count} couldn't be read: {names}	{added}; не удалось прочитать ({count}): {names}
+	{names} and {n} more	{names} и ещё {n}
+	{added}; {n} skipped (limit {max})	{added}; пропущено: {n} (лимит {max})
+	nothing is selected	ничего не выделено
+	select a picture or shape first	сначала выделите рисунок или фигуру
+	select recipients first	сначала выберите получателей
+	select two or more pictures or shapes first (Shift+click)	выделите два или больше рисунков или фигур (Shift+щелчок)
+	text boxes can't go inside a text box	надпись нельзя поместить внутрь надписи
+	the cursor isn't in a table	курсор не в таблице
+	{name} options	{name}: параметры
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	В тексте
+	In margin	На поле
+	Drop Cap Options…	Параметры буквицы…
+	Lines to drop:	Высота в строках:
+	Distance from text:	Расстояние от текста:
+	Distance from text	Расстояние от текста
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	абзац пуст
+	the paragraph starts with a space	абзац начинается с пробела
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Сохранять пропорции
+	Relative to original picture size	Относительно исходного размера рисунка
+	Original size	Исходный размер
+	{width} × {height} pixels	{width} × {height} пикс.
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Введите размер в любых единицах, например 5 cm или 300 px. Другая сторона изменится вместе с ней, и рисунок сохранит пропорции.
+
+	Import…	Импорт…

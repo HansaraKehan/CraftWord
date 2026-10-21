@@ -216,6 +216,10 @@ pub struct Float {
     /// laid out, as Word for Windows does (Word for Mac draws hidden VML shapes).
     #[serde(skip_serializing_if = "is_false")]
     pub hidden: bool,
+    /// Anchored in a table cell but placed on the page, not in the cell (`wp:anchor/@layoutInCell`
+    /// off, any VML shape in a header or footer): a picture watermark in a header that starts with a table.
+    #[serde(skip_serializing_if = "is_false")]
+    pub outside_cell: bool,
 }
 
 /// Longest alternative text kept (characters): hostile files and commands are capped.
@@ -314,6 +318,60 @@ pub enum NoteKind {
     #[default]
     Footnote,
     Endnote,
+}
+
+/// Where a positional tab ([`InlineObject::PositionalTab`]) lands on its line, and how the text
+/// after it lines up there (ECMA-376 `ST_PTabAlignment`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PTabAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl PTabAlign {
+    pub const ALL: [PTabAlign; 3] = [PTabAlign::Left, PTabAlign::Center, PTabAlign::Right];
+
+    /// The OOXML name (`left`, `center`, `right`).
+    pub fn ooxml(self) -> &'static str {
+        match self {
+            PTabAlign::Left => "left",
+            PTabAlign::Center => "center",
+            PTabAlign::Right => "right",
+        }
+    }
+
+    pub fn from_ooxml(v: &str) -> Option<PTabAlign> {
+        PTabAlign::ALL.into_iter().find(|a| a.ooxml() == v)
+    }
+}
+
+/// What a positional tab's place is measured against (ECMA-376 `ST_PTabRelativeTo`): the text
+/// margins, or the paragraph's indents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PTabBase {
+    #[default]
+    Margin,
+    Indent,
+}
+
+impl PTabBase {
+    pub const ALL: [PTabBase; 2] = [PTabBase::Margin, PTabBase::Indent];
+
+    /// The OOXML name (`margin`, `indent`).
+    pub fn ooxml(self) -> &'static str {
+        match self {
+            PTabBase::Margin => "margin",
+            PTabBase::Indent => "indent",
+        }
+    }
+
+    pub fn from_ooxml(v: &str) -> Option<PTabBase> {
+        PTabBase::ALL.into_iter().find(|a| a.ooxml() == v)
+    }
 }
 
 /// How ruby (phonetic guide) text lines up over its base text (ECMA-376 `ST_RubyAlign`).
@@ -549,6 +607,17 @@ pub enum InlineObject {
         #[serde(default, skip_serializing_if = "CharProps::is_empty")]
         props: Box<CharProps>,
     },
+    /// A positional tab (Word's alignment tab, `w:ptab`): it goes to the left edge, centre or
+    /// right edge of the margins or of the indents, whatever the paragraph's tab stops, and the
+    /// text after it lines up there. Text already past that place sends it to the next line.
+    PositionalTab {
+        #[serde(default)]
+        align: PTabAlign,
+        #[serde(default)]
+        relative_to: PTabBase,
+        #[serde(default)]
+        leader: crate::props::TabLeader,
+    },
     /// Something we don't model, kept for round-trip (raw XML of the source format).
     Opaque {
         format: String,
@@ -678,6 +747,14 @@ impl InlineObject {
             })
             .collect()
     }
+    /// A legacy form field's definition (`FORMCHECKBOX`, `FORMTEXT`, `FORMDROPDOWN`), read from
+    /// the `w:ffData` it keeps; `None` for anything else.
+    pub fn legacy_form(&self) -> Option<crate::legacy_form::LegacyForm> {
+        match self {
+            InlineObject::Field { form, .. } if !form.is_empty() => crate::legacy_form::LegacyForm::parse(form),
+            _ => None,
+        }
+    }
     /// Zero-width markers don't take part in layout.
     pub fn is_marker(&self) -> bool {
         matches!(
@@ -756,6 +833,7 @@ impl InlineObject {
             InlineObject::Field { result, .. } => result,
             InlineObject::Equation { linear, .. } => linear,
             InlineObject::Ruby { base, .. } => base,
+            InlineObject::PositionalTab { .. } => "\t",
             InlineObject::Opaque { text, .. } => text,
             _ => "",
         }
@@ -870,7 +948,7 @@ impl Paragraph {
                 k += 1;
                 continue;
             }
-            let font = runs.peek().filter(|(r, _)| r.contains(&i)).and_then(|(_, p)| p.font.as_deref());
+            let font = runs.peek().filter(|(r, _)| r.contains(&i)).and_then(|(_, p)| p.shown_font());
             out.push(font.and_then(|f| crate::symbol_fonts::symbol_char(f, c)).unwrap_or(c));
         }
         out
@@ -1322,7 +1400,7 @@ impl Paragraph {
         let mut a = 0;
         let mut prev_end = false;
         for (i, c) in t.char_indices() {
-            if i >= off {
+            if i > off {
                 break;
             }
             if prev_end && c != ' ' {
@@ -1335,7 +1413,9 @@ impl Paragraph {
             }
         }
         let mut b = t.len();
-        let mut ended = false;
+        // A caret on the space right after a sentence's end belongs to that sentence; a terminator
+        // directly followed by text ("Hello.World") doesn't end the sentence the caret is in.
+        let mut ended = t.get(..off).unwrap_or("").ends_with(['.', '!', '?']) && t.get(off..).unwrap_or("").starts_with(' ');
         for (i, c) in t.get(off..).unwrap_or("").char_indices() {
             if ended && c != ' ' {
                 b = off + i;
@@ -1352,6 +1432,19 @@ impl Paragraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentence_at_sentence_start() {
+        let p = Paragraph::with_text("Hello. World", CharProps::default());
+        assert_eq!(p.sentence_at(0), (0, 7));
+        assert_eq!(p.sentence_at(6), (0, 7));
+        assert_eq!(p.sentence_at(7), (7, 12));
+        assert_eq!(p.sentence_at(8), (7, 12));
+        assert_eq!(p.sentence_at(99), (7, 12));
+        let p = Paragraph::with_text("Hello.World", CharProps::default());
+        assert_eq!(p.sentence_at(6), (6, 11));
+        assert_eq!(p.sentence_at(8), (6, 11));
+    }
 
     fn bold() -> CharProps {
         CharProps { bold: Some(true), ..Default::default() }

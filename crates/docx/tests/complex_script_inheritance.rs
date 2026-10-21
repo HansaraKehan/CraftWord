@@ -2,7 +2,8 @@
 //! Synthetic packages, written here; no external documents or installed fonts are needed.
 
 use std::io::Write;
-use wordcraft_doc::{Document, Paragraph};
+use wordcraft_doc::props::CharProps;
+use wordcraft_doc::{Document, Paragraph, Run};
 
 fn package(run: &str, defaults: &str, styles: &str, paragraph_style: &str) -> Vec<u8> {
     let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
@@ -29,13 +30,41 @@ fn paragraph(d: &Document) -> &Paragraph {
     d.body.iter().find_map(|b| b.as_para()).unwrap()
 }
 
+/// `runs` without run direction and bidi language (in the formatting change too), adjacent equal
+/// runs merged.
+fn undirected(runs: &[Run]) -> Vec<Run> {
+    let strip = |c: &mut CharProps| {
+        c.rtl = None;
+        c.lang_bidi = None;
+    };
+    let mut out: Vec<Run> = Vec::new();
+    for r in runs {
+        let mut props = r.props.clone();
+        strip(&mut props);
+        if let Some(ch) = props.fmt_change.as_mut() {
+            strip(&mut ch.old);
+        }
+        match out.last_mut() {
+            Some(last) if last.props == props => last.len += r.len,
+            _ => out.push(Run { len: r.len, props }),
+        }
+    }
+    out
+}
+
 fn check_generations(bytes: &[u8], check: impl Fn(&Document)) {
     let mut d = wordcraft_docx::read(bytes).unwrap();
-    for _ in 0..3 {
+    for generation in 0..3 {
         check(&d);
         let next = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
         assert_eq!(paragraph(&next).text, paragraph(&d).text);
-        assert_eq!(paragraph(&next).runs, paragraph(&d).runs);
+        if generation == 0 {
+            // The first save splits the mixed Hebrew/Latin run by direction and names the
+            // Hebrew's language (#1543); apart from that nothing changes.
+            assert_eq!(undirected(&paragraph(&next).runs), undirected(&paragraph(&d).runs));
+        } else {
+            assert_eq!(paragraph(&next).runs, paragraph(&d).runs);
+        }
         assert_eq!(paragraph(&next).props.bidi, Some(true));
         d = next;
     }
@@ -132,4 +161,40 @@ fn tracked_formatting_keeps_independent_complex_script_values() {
         overlaid.overlay(c);
         assert_eq!(overlaid.fmt_change, c.fmt_change);
     });
+}
+
+/// `(w:rtl, w:lang)` elements of a run's current `w:rPr` and of its `w:rPrChange` "before" copy.
+fn direction_markup(run: &str) -> (String, String) {
+    let pick = |rpr: &str| -> String {
+        rpr.split('<').filter(|t| t.starts_with("w:rtl") || t.starts_with("w:lang")).map(|t| format!("<{t}")).collect::<Vec<_>>().join("")
+    };
+    let (now, change) = run.split_once("<w:rPrChange").unwrap_or((run, ""));
+    (pick(now), pick(change))
+}
+
+#[test]
+fn split_runs_add_no_phantom_tracked_formatting() {
+    // #1543: direction and language the writer adds to a piece of a run that has a tracked
+    // formatting change go into the change's "before" copy too, so Word lists no change the
+    // author never made ("Formatted: Right-to-left, Hebrew").
+    let run = r#"<w:sz w:val="24"/><w:rPrChange w:id="7" w:author="Synthetic Author" w:date="2026-10-11T00:00:00Z"><w:rPr><w:sz w:val="20"/></w:rPr></w:rPrChange>"#;
+    let d = wordcraft_docx::read(&package(run, "", "", "")).unwrap();
+    let bytes = wordcraft_docx::write(&d).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap().by_name("word/document.xml").unwrap(), &mut xml)
+        .unwrap();
+    let runs: Vec<&str> = xml.split("<w:r>").skip(1).map(|r| r.split("</w:r>").next().unwrap()).collect();
+    assert!(runs.len() >= 2, "the mixed run is split: {xml}");
+    assert!(runs.iter().any(|r| r.contains("<w:rtl/>")), "{xml}");
+    for r in runs {
+        assert!(r.contains("<w:rPrChange"), "every piece keeps the tracked change: {r}");
+        let (now, before) = direction_markup(r);
+        assert_eq!(now, before, "no direction or language difference to report: {r}");
+    }
+    // And WordCraft reads no difference back either.
+    let r = wordcraft_docx::read(&bytes).unwrap();
+    for run in &paragraph(&r).runs {
+        let old = &run.props.fmt_change.as_ref().unwrap().old;
+        assert_eq!((old.rtl, old.lang_bidi.as_deref()), (run.props.rtl, run.props.lang_bidi.as_deref()));
+    }
 }

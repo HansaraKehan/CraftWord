@@ -1,6 +1,6 @@
 # WordCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Czech proofing review fixes; previously minor: Portuguese proofing; previously minor: Polish interface and Polish proofing; previously trivial: M7: formatting revisions landed, #41; previously trivial: M5: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: alpha gate checked: six core workflows pass; previously major: milestones moved here from ROADMAP.md; Current focus set from the re-measured gaps) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** trivial (M6: Manage Sources imports Word's `Sources.xml`, #2640; previously minor: Czech proofing review fixes; previously minor: Portuguese proofing; previously minor: Polish interface and Polish proofing; previously trivial: M7: formatting revisions landed, #41; previously trivial: M5: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: alpha gate checked: six core workflows pass; previously major: milestones moved here from ROADMAP.md; Current focus set from the re-measured gaps) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 Forward-looking plan. The summary is [`ROADMAP.md`](../ROADMAP.md); the ranked work list is
 [`gaps.md`](gaps.md); the numbers are in [`target-app-parity.md`](target-app-parity.md). Hours are
@@ -53,7 +53,7 @@ partial rows are fidelity gaps (beta work), not broken workflows. WordCraft stay
 | M3 | Insert tab | mostly done; equations done (#191), icons done (#309); charts, SmartArt, 3D, screenshot, online media missing | 50–80 h |
 | M4 | Layout and Design tabs | done except column balancing, group | 6–10 h |
 | M5 | Tables | done (row splitting, floating tables, style formatting); custom table styles (#256); Draw Table and Eraser (#303) | 6–10 h |
-| M6 | References | first version done (TOC fields, cross-references, Zotero); footnote continuation missing; all 12 bibliography styles (#383) | 15–25 h |
+| M6 | References | first version done (TOC fields, cross-references, Zotero); footnote continuation missing; all 12 bibliography styles (#383); bibliography sources import from Word's `Sources.xml` (#2640) | 15–25 h |
 | M7 | Review | done (balloons, paragraph-mark revisions, formatting revisions #41); move tracking, multilingual proofing missing | 35–60 h |
 | M8 | View | mostly done; window commands missing | 3–5 h |
 | M9 | Mailings | done (first version); Excel/Outlook data sources and email merge missing | 6–10 h |
@@ -74,6 +74,7 @@ languages, screen-reader access, ecosystem decisions (VBA, add-ins, cloud), an i
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | trivial | M6: Manage Sources imports Word's `Sources.xml` (#2640) |
 | 2026-10-12 | minor | Czech proofing review: short-word splits rank after deletion, NOSUGGEST excludes suggestions while accepting typed forms, affix comments apply only to headers, ratios keep spaces and repeated-word messages use Czech quotes; synthetic engine end-to-end and latency checks |
 | 2026-10-12 | minor | Czech spelling from the installed Hunspell dictionary, runtime-table suggestions and generic checks; Czech interface writes cs-CZ documents; no Czech hyphenation patterns bundled; estimates unchanged |
 | 2026-10-12 | minor | M15: Portuguese proofing (pt-BR spelling from the installed VERO dictionary, suggestions, grammar, hyphenation; Review › Language gains Português (Brasil)) |

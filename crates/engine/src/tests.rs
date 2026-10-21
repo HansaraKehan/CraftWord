@@ -163,6 +163,11 @@ fn word_default_shortcuts_resolve() {
         assert_eq!(id("Alt+F1"), Some("fields.next"));
     }
     assert_eq!(id("Mod+PageUp"), Some("edit.findPrevious"));
+    // The Spike: Word's Ctrl+F3 and Ctrl+Shift+F3 (⌘F3 and ⌘⇧F3 in Word for Mac).
+    assert_eq!(id("Mod+F3"), Some("edit.spike"));
+    assert_eq!(id("Mod+Shift+F3"), Some("edit.insertSpike"));
+    assert_eq!(id("F3"), Some("edit.findNext"));
+    assert_eq!(id("Shift+F3"), Some("format.changeCase"));
     assert_eq!(id("F12"), Some("file.saveAs"));
     assert_eq!(id("Mod+Alt+M"), Some("review.newComment"));
     assert_eq!(id("Mod+H"), Some("edit.findReplace"));
@@ -948,6 +953,99 @@ fn copying_an_equation_puts_mathml_on_the_clipboard() {
     assert!(r["html"].as_str().is_some_and(|h| h.contains("Speed") && !h.contains("<math")), "{r}");
 }
 
+/// Whether `xml` is one element whose tags all nest and close (enough to check a clipboard
+/// payload without an XML parser in the engine's tests).
+fn one_balanced_element(xml: &str) -> bool {
+    let mut stack: Vec<String> = Vec::new();
+    let mut closed_root = false;
+    let mut rest = xml;
+    while let Some(lt) = rest.find('<') {
+        if closed_root || (stack.is_empty() && !rest[..lt].trim().is_empty()) {
+            return false;
+        }
+        let Some(gt) = rest[lt..].find('>') else { return false };
+        let tag = &rest[lt + 1..lt + gt];
+        rest = &rest[lt + gt + 1..];
+        if let Some(name) = tag.strip_prefix('/') {
+            if stack.pop().as_deref() != Some(name.trim()) {
+                return false;
+            }
+            closed_root = stack.is_empty();
+        } else if !tag.ends_with('/') {
+            stack.push(tag.split_whitespace().next().unwrap_or_default().to_string());
+        } else if stack.is_empty() {
+            closed_root = true;
+        }
+    }
+    closed_root && stack.is_empty() && rest.trim().is_empty()
+}
+
+#[test]
+fn copying_one_equation_gives_its_mathml_for_the_math_clipboard_formats() {
+    // #1297: Word reads a pasted equation first from the clipboard's "MathML" formats; a copy of
+    // one equation alone carries its MathML for the host to put there.
+    let cases = [
+        ("y=(a+b)/(c-d)", "<mfrac>"),
+        ("x_i^2+e^(-t)", "<msubsup>"),
+        ("√(x^2+1)+∛8", "<msqrt>"),
+        ("∑_(k=1)^n k^2", "<munderover>"),
+        ("∫_0^1 f(x)dx", "∫"),
+        ("■(1&0@0&1)", "<mtable>"),
+    ];
+    for (linear, element) in cases {
+        let mut s = s();
+        run(&mut s, "insert.equation", json!({"linear": linear, "edit": false}));
+        run(&mut s, "select.all", json!({}));
+        let r = run(&mut s, "edit.copy", json!({}));
+        let mathml = r["mathml"].as_str().unwrap_or_default().to_string();
+        assert!(mathml.starts_with("<math xmlns=\"http://www.w3.org/1998/Math/MathML\""), "{linear}: {mathml}");
+        assert!(mathml.contains(element), "{linear}: {mathml}");
+        // Alone on its line, it is a display equation.
+        assert!(mathml.contains("display=\"block\""), "{linear}: {mathml}");
+        assert!(one_balanced_element(&mathml), "{linear}: not one well-formed element: {mathml}");
+        // No XML prolog: the W3C transfer rules want `<math` first, so readers that sniff the
+        // start of the text recognise it.
+        assert!(!mathml.contains("<?xml"), "{mathml}");
+        // Pasting it back (as a MathML reader would get it) gives the same equation.
+        let mut t = s_with_paste(&mathml);
+        assert_eq!(equations(&t), equations(&s), "{mathml}");
+        // Its presentation elements alone, without our linear-format annotation (which Word
+        // ignores), still read as an equation of the same shape.
+        let bare = match (mathml.find("<annotation"), mathml.find("</annotation>")) {
+            (Some(a), Some(b)) => format!("{}{}", &mathml[..a], &mathml[b + "</annotation>".len()..]),
+            _ => mathml.clone(),
+        };
+        t = s_with_paste(&bare);
+        assert_eq!(equations(&t).len(), 1, "{linear}: {bare}");
+    }
+}
+
+fn s_with_paste(html: &str) -> Session {
+    let mut t = s();
+    run(&mut t, "edit.paste", json!({"text": "", "html": html}));
+    t
+}
+
+#[test]
+fn copying_an_equation_with_text_offers_no_math_clipboard_formats() {
+    // #1297: Word takes the "MathML" format before the HTML, so offering it for a copy with text
+    // around the equation would drop the text. Text alone has none either.
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "Speed "}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "insert.equation", json!({"linear": "y=2x_s", "edit": false}));
+    run(&mut s, "select.all", json!({}));
+    let r = run(&mut s, "edit.copy", json!({}));
+    assert!(r.get("mathml").is_none() && r["html"].as_str().is_some_and(|h| h.contains("<math")), "{r}");
+    run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": 0}, "focus": {"block": 0, "off": 5}}));
+    let r = run(&mut s, "edit.copy", json!({}));
+    assert!(r.get("mathml").is_none(), "{r}");
+    // Cut of the equation alone offers it.
+    run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": 6}, "focus": {"block": 0, "off": 9}}));
+    let r = run(&mut s, "edit.cut", json!({}));
+    assert!(r["mathml"].as_str().is_some_and(|m| m.contains("<msub>") && !m.contains("display=")), "an inline equation: {r}");
+}
+
 #[test]
 fn copying_bold_text_puts_html_on_the_clipboard() {
     // #1523: formatted text reaches other programs as HTML, not only as plain text.
@@ -975,6 +1073,91 @@ fn copying_symbol_font_text_puts_the_unicode_symbols_on_the_clipboard() {
     let clip = s.clipboard_text.clone();
     run(&mut s, "edit.paste", json!({"text": clip}));
     assert_eq!(text(&s), "ok J\u{F0FC}ok J\u{F0FC}");
+}
+
+/// The text drawn on the first page.
+fn drawn_text(s: &mut Session) -> String {
+    let layout = s.layout();
+    let draws = wordcraft_layout::display::page_display(&s.doc, &layout.pages[0], &Default::default());
+    draws.iter().filter_map(|d| if let wordcraft_layout::display::Draw::Glyphs { text, .. } = d { Some(text.as_str()) } else { None }).collect()
+}
+
+#[test]
+fn an_inserted_symbol_keeps_its_font_when_the_text_font_changes() {
+    // #2036: Insert › Symbol in Wingdings, then the whole document set in Times New Roman: the
+    // symbol stays a check mark (as Word keeps a `w:sym` character's font).
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "ab"}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "insert.symbol", json!({"char": "\u{F0FC}", "font": "Wingdings"}));
+    run(&mut s, "text.insert", json!({"text": "c"}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "format.font", json!({"name": "Times New Roman"}));
+    assert_eq!(text(&s), "ab\u{F0FC}c", "the stored character is unchanged");
+    assert_eq!(drawn_text(&mut s), "ab\u{2713}c");
+    run(&mut s, "edit.copy", json!({}));
+    assert_eq!(s.clipboard_text, "ab\u{2713}c");
+    // Text typed after the symbol is in the text's font, not the symbol's.
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "text.insert", json!({"text": "J"}));
+    assert_eq!(drawn_text(&mut s), "ab\u{2713}cJ");
+    // Clear Formatting keeps the symbol too.
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "format.clear", json!({}));
+    assert_eq!(drawn_text(&mut s), "ab\u{2713}cJ");
+}
+
+#[test]
+fn format_painter_does_not_carry_a_symbol_font_to_text() {
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "ok "}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "insert.symbol", json!({"char": "\u{F0FC}", "font": "Wingdings"}));
+    run(&mut s, "text.insert", json!({"text": " J"}));
+    // Pick up the symbol's formatting and paint it on "J".
+    run(&mut s, "select.text", json!({"text": "\u{F0FC}"}));
+    run(&mut s, "edit.formatPainter", json!({}));
+    run(&mut s, "select.text", json!({"text": "J"}));
+    run(&mut s, "edit.pasteFormat", json!({}));
+    let shown = drawn_text(&mut s);
+    assert!(shown.ends_with('J'), "{shown}");
+}
+
+/// "ab" then a Wingdings check mark, with the caret after it.
+fn text_then_symbol() -> Session {
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "ab"}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "insert.symbol", json!({"char": "\u{F0FC}", "font": "Wingdings"}));
+    s
+}
+
+#[test]
+fn a_style_created_next_to_a_symbol_does_not_take_its_font() {
+    let mut s = text_then_symbol();
+    let r = run(&mut s, "styles.create", json!({"name": "Mine"}));
+    let id = r["id"].as_str().unwrap().to_string();
+    assert_eq!(s.doc.styles.get(&id).unwrap().chr.sym_font, None);
+    assert_eq!(drawn_text(&mut s), "ab\u{2713}");
+}
+
+#[test]
+fn updating_a_style_to_match_a_symbol_does_not_take_its_font() {
+    let mut s = text_then_symbol();
+    run(&mut s, "select.text", json!({"text": "\u{F0FC}"}));
+    run(&mut s, "styles.updateToMatch", json!({}));
+    assert_eq!(s.doc.styles.get("Normal").unwrap().chr.sym_font, None);
+    assert_eq!(drawn_text(&mut s), "ab\u{2713}");
+}
+
+#[test]
+fn replacing_a_symbol_with_text_gives_the_text_no_symbol_font() {
+    let mut s = text_then_symbol();
+    run(&mut s, "edit.replaceAll", json!({"text": "\u{F0FC}", "with": "OK"}));
+    assert_eq!(text(&s), "abOK");
+    let p = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+    assert_eq!(p.props_of_char(2).sym_font, None);
+    assert_eq!(drawn_text(&mut s), "abOK");
 }
 
 fn bold_at(s: &Session, block: usize, off: usize) -> bool {
@@ -1240,6 +1423,62 @@ fn paste_keeps_source_formatting_from_other_programs() {
     assert_eq!(props_at(&s, 4).italic, Some(true));
 }
 
+/// A CF_HTML ("HTML Format") clipboard payload around `html`, with the byte offsets Windows writes.
+fn cf_html(html: &str) -> String {
+    let n = "Version:1.0\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n".len();
+    let a = html.find("<body>").map_or(0, |i| i + 6);
+    let b = html.find("</body>").unwrap_or(html.len());
+    format!(
+        "Version:1.0\r\nStartHTML:{n:010}\r\nEndHTML:{:010}\r\nStartFragment:{:010}\r\nEndFragment:{:010}\r\n{html}",
+        n + html.len(),
+        n + a,
+        n + b
+    )
+}
+
+/// LibreOffice copies a paragraph indented on both sides as `<blockquote>`, its margins in the
+/// page's stylesheet (#1270). Pasting it gives a Normal paragraph with those indents — not the
+/// Quote style (centred, italic) — by Paste and by Paste Special > HTML alike.
+#[test]
+fn pasted_blockquote_is_an_indented_paragraph_not_a_quote() {
+    let page = "<!DOCTYPE html><html><head><meta name=\"generator\" content=\"LibreOffice\"/><style type=\"text/css\">\
+        blockquote { margin-left: 1cm; margin-right: 2cm; background: transparent }\
+        p { line-height: 115%; margin-bottom: 0.25cm }</style></head>\
+        <body><p>First plain.</p><blockquote lang=\"en-US\"><b>Bold indented.</b></blockquote><p>Last plain.</p></body></html>";
+    let check = |s: &Session, left: f32, right: f32| {
+        assert!(text(s).starts_with("First plain.\nBold indented.\nLast plain."), "{}", text(s));
+        let q = s.doc.body.get(1).and_then(|b| b.as_para()).unwrap();
+        assert_ne!(q.props.style.as_deref(), Some("Quote"), "not the Quote style");
+        let rp = s.doc.styles.resolve_para(&q.props);
+        assert_ne!(rp.align, wordcraft_doc::props::Align::Center, "not centred");
+        assert!((rp.indent_left - left).abs() < 0.1, "left {}", rp.indent_left);
+        assert!((rp.indent_right - right).abs() < 0.1, "right {}", rp.indent_right);
+        let rc = s.doc.styles.resolve_char(q.props.style.as_deref(), q.props_of_char(0));
+        assert!(!rc.italic, "not italic");
+        assert!(rc.bold, "keeps its bold");
+    };
+    let mut s = s();
+    run(&mut s, "edit.paste", json!({"text": "First plain.\nBold indented.\nLast plain.", "html": cf_html(page)}));
+    check(&s, 72.0 / 2.54, 144.0 / 2.54);
+    let mut s2 = self::s();
+    run(&mut s2, "edit.pasteSpecial", json!({"as": "html", "html": cf_html(page)}));
+    check(&s2, 72.0 / 2.54, 144.0 / 2.54);
+    // No margins given: half an inch each side.
+    let mut s3 = self::s();
+    run(&mut s3, "edit.paste", json!({"text": "a\nq", "html": "<p>a</p><blockquote>q</blockquote>"}));
+    let q = s3.doc.body.get(1).and_then(|b| b.as_para()).unwrap();
+    assert_ne!(q.props.style.as_deref(), Some("Quote"));
+    assert_eq!((q.props.indent_left, q.props.indent_right), (Some(36.0), Some(36.0)));
+}
+
+/// Opening an .html file keeps `<blockquote>` as the Quote style, so HTML round-trips.
+#[test]
+fn opened_html_blockquote_stays_a_quote() {
+    let d = crate::io::open_bytes("q.html", b"<p>a</p><blockquote>q</blockquote>").unwrap();
+    let q = d.body.get(1).and_then(|b| b.as_para()).unwrap();
+    assert_eq!(q.props.style.as_deref(), Some("Quote"));
+}
+
 /// Paste Special lists a picture on the system clipboard and pastes it (#687).
 #[test]
 fn paste_special_lists_and_pastes_a_picture() {
@@ -1287,6 +1526,102 @@ fn clipboard_pane_collects_copies_and_pastes_one_undoably() {
     run(&mut s, "edit.clearClipboard", json!({}));
     assert!(s.clip_history.is_empty());
     assert!(s.run("edit.pasteClipboardItem", &json!({"index": 0})).is_err());
+}
+
+fn spiked(s: &Session) -> Option<String> {
+    s.building_blocks.get("Spike").map(|f| f.plain_text())
+}
+
+#[test]
+fn spike_collects_cuts_and_insert_spike_pastes_them_and_empties_it() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("Alpha beta gamma.\n"));
+    run(&mut s, "select.text", json!({"text": "beta"}));
+    run(&mut s, "edit.copy", json!({}));
+    run(&mut s, "select.text", json!({"text": "Alpha"}));
+    run(&mut s, "edit.spike", json!({}));
+    run(&mut s, "select.text", json!({"text": "gamma"}));
+    run(&mut s, "edit.spike", json!({}));
+    assert_eq!(text(&s), " beta .\n", "Ctrl+F3 cuts");
+    assert_eq!(spiked(&s).as_deref(), Some("Alpha\ngamma\n"), "each piece is followed by a paragraph mark");
+    assert_eq!((s.clipboard_text.as_str(), s.clip_history.len()), ("beta", 1), "the clipboard is left alone");
+    // Ctrl+Shift+F3 on the empty last paragraph: everything, in the order it was collected.
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "edit.insertSpike", json!({}));
+    assert_eq!(text(&s), " beta .\nAlpha\ngamma\n");
+    assert_eq!(spiked(&s), None, "Ctrl+Shift+F3 empties the Spike");
+    assert!(matches!(s.run("edit.insertSpike", &json!({})), Err(crate::CmdError::Disabled(_))));
+}
+
+#[test]
+fn spike_keeps_character_formatting() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("Bold plain\n"));
+    run(&mut s, "select.text", json!({"text": "Bold"}));
+    run(&mut s, "format.bold", json!({}));
+    run(&mut s, "edit.spike", json!({}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "edit.insertSpike", json!({}));
+    assert_eq!(text(&s), " plain\nBold\n");
+    let p = s.doc.para_at(&Pos::body(1, 0)).unwrap();
+    assert_eq!(p.props_of_char(0).bold, Some(true));
+}
+
+#[test]
+fn spike_and_insert_spike_are_one_undo_step_each() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("one two\n"));
+    run(&mut s, "select.text", json!({"text": "one"}));
+    run(&mut s, "edit.spike", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(text(&s), "one two\n");
+    assert_eq!(spiked(&s).as_deref(), Some("one\n"), "like Cut and the clipboard, undo leaves the Spike as it is");
+    run(&mut s, "caret.docEnd", json!({}));
+    let before = text(&s);
+    run(&mut s, "edit.insertSpike", json!({}));
+    assert_eq!(text(&s), "one two\none\n");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(text(&s), before);
+}
+
+#[test]
+fn spike_needs_a_selection() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("one two"));
+    let r = s.run("edit.spike", &json!({}));
+    assert!(matches!(r, Err(crate::CmdError::Disabled(_))), "{r:?}");
+    assert_eq!(spiked(&s), None);
+    assert_eq!(text(&s), "one two");
+}
+
+#[test]
+fn autotext_inserts_the_spike_without_emptying_it() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("Alpha beta\n"));
+    run(&mut s, "select.text", json!({"text": "Alpha"}));
+    run(&mut s, "edit.spike", json!({}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "insert.autoText", json!({"insert": "Spike"}));
+    run(&mut s, "insert.autoText", json!({"insert": "Spike"}));
+    assert_eq!(text(&s), " beta\nAlpha\nAlpha\n");
+    assert_eq!(spiked(&s).as_deref(), Some("Alpha\n"));
+}
+
+#[test]
+fn spike_outside_the_editable_regions_changes_nothing() {
+    let mut s = Session::new(wordcraft_doc::Document::from_text("Locked intro.\nFill in here.\n"));
+    run(&mut s, "select.text", json!({"text": "Fill in here."}));
+    run(&mut s, "review.restrict", json!({"exception": "add"}));
+    run(&mut s, "review.restrict", json!({"mode": "readOnly"}));
+    // Collected inside the exception: allowed.
+    run(&mut s, "select.text", json!({"text": "here"}));
+    run(&mut s, "edit.spike", json!({}));
+    assert_eq!(spiked(&s).as_deref(), Some("here\n"));
+    // Outside it: refused, and neither the document nor the Spike changes.
+    let before = text(&s);
+    run(&mut s, "select.text", json!({"text": "intro"}));
+    assert!(s.run("edit.spike", &json!({})).is_err());
+    assert_eq!(text(&s), before);
+    assert_eq!(spiked(&s).as_deref(), Some("here\n"));
+    // Inserting outside it: refused, and the Spike keeps what it holds.
+    assert!(s.run("edit.insertSpike", &json!({})).is_err());
+    assert_eq!(text(&s), before);
+    assert_eq!(spiked(&s).as_deref(), Some("here\n"));
 }
 
 #[test]
@@ -1337,6 +1672,37 @@ fn tables_commands() {
     run(&mut s, "table.deleteTable", json!({}));
     assert!(s.doc.body.iter().all(|b| b.as_table().is_none()));
     assert!(s.run("table.merge", &json!({})).is_err());
+}
+
+#[test]
+fn delete_row_on_a_merge_start_promotes_the_cell_below() {
+    use wordcraft_doc::props::VMerge;
+    let vm = |s: &Session, r: usize| {
+        let t = s.doc.body.iter().find_map(|b| b.as_table()).unwrap();
+        t.rows[r].cells[0].props.vmerge
+    };
+    // Merge of two rows: the cell below becomes an ordinary cell.
+    let mut s = s();
+    run(&mut s, "insert.table", json!({"rows": 3, "cols": 2}));
+    run(&mut s, "caret.down", json!({}));
+    run(&mut s, "caret.up", json!({"extend": true}));
+    run(&mut s, "table.merge", json!({}));
+    run(&mut s, "caret.up", json!({}));
+    run(&mut s, "table.deleteRow", json!({}));
+    assert_eq!(vm(&s, 0), VMerge::None, "first row's cell continues a merge that no longer exists");
+    // Merge of three rows: the cell below restarts the merge.
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    run(&mut s, "insert.table", json!({"rows": 4, "cols": 2}));
+    run(&mut s, "caret.down", json!({}));
+    run(&mut s, "caret.down", json!({}));
+    run(&mut s, "caret.up", json!({"extend": true}));
+    run(&mut s, "caret.up", json!({"extend": true}));
+    run(&mut s, "table.merge", json!({}));
+    run(&mut s, "caret.up", json!({}));
+    run(&mut s, "caret.up", json!({}));
+    run(&mut s, "table.deleteRow", json!({}));
+    assert_eq!(vm(&s, 0), VMerge::Restart);
+    assert_eq!(vm(&s, 1), VMerge::Continue);
 }
 
 fn cells(s: &Session) -> Option<((usize, usize), (usize, usize))> {
@@ -1753,6 +2119,50 @@ fn layout_size_refuses_a_page_its_margins_dont_fit() {
     }
     run(&mut s, "layout.size", json!({"width": 180.0, "height": 180.0}));
     assert_eq!((s.doc.last_section.page_w, s.doc.last_section.page_h), (180.0, 180.0), "exactly 36 pt of room is enough");
+}
+
+/// A negative margin (or gutter) counts as zero, so it can't offset an oversized one past the
+/// text-room check: `layout.margins` refuses and changes nothing.
+#[test]
+fn layout_margins_negative_cannot_hide_an_oversized_margin() {
+    let mut s = s();
+    run(&mut s, "layout.margins", json!({"preset": "normal"}));
+    let before = s.doc.last_section.clone();
+    for v in [json!({"top": 2000, "bottom": -2000}), json!({"left": 2000, "right": -2000}), json!({"left": 600, "right": 0, "gutter": -600})] {
+        let e = s.run("layout.margins", &v).unwrap_err().to_string();
+        assert!(e.contains("margins leave no room for text"), "{v}: {e}");
+        assert_eq!(s.doc.last_section, before, "{v} changes nothing");
+    }
+}
+
+/// #2072: `layout.size` when the focus is in a header or footer modifies that section, not
+/// always section 0, and `sect` reports the focused section's properties.
+#[test]
+fn layout_size_when_focus_is_in_header_updates_correct_section() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "section 1"}));
+    run(&mut s, "layout.break", json!({"kind": "nextPage"}));
+    run(&mut s, "text.insert", json!({"text": "section 2"}));
+    assert_eq!(s.doc.sections().len(), 2);
+
+    let hid = s.doc.add_part(
+        wordcraft_doc::PartKind::Header,
+        vec![std::sync::Arc::new(wordcraft_doc::Block::Para(wordcraft_doc::Paragraph::with_text("header text", Default::default())))],
+    );
+    s.doc.last_section.headers.default = Some(hid);
+
+    // Focus inside section 2's header
+    s.sel = crate::Selection::caret(s.doc.start_of(wordcraft_doc::StoryRef::Part(hid)));
+    assert_eq!(crate::cmd::page::sect(&s).page_w, s.doc.last_section.page_w);
+
+    // Change size to A4
+    run(&mut s, "layout.size", json!({"name": "A4"}));
+    assert!((s.doc.last_section.page_w - 595.28).abs() < 0.1);
+    assert!((s.doc.last_section.page_h - 841.89).abs() < 0.1);
+
+    // Section 1 remains Letter (612.0 x 792.0)
+    let s0 = s.doc.sections()[0].1;
+    assert_eq!((s0.page_w, s0.page_h), (612.0, 792.0));
 }
 
 /// #1433: the smallest page there can be (0.1" wide, no margins, set straight through Page
@@ -2391,6 +2801,85 @@ fn imported_range_toc_is_refreshed_in_place() {
     }
 }
 
+/// #2182 (the save and reopen gap, not the flow in the report, which #1197 fixed): after a save
+/// and reopen a TOC is a range field opening in its first entry. The context menu offers Update
+/// Field wherever the caret is in it, including the field's own marker (offset 0 of the first
+/// entry) and the end of the last entry; and repeated update, save and reopen adds no blank line.
+#[test]
+fn toc_menu_offers_update_field_after_save_and_reopen() {
+    use wordcraft_doc::para::InlineObject;
+    use wordcraft_doc::props::CharProps;
+    // What the canvas context menu checks before offering Update Field.
+    let offered = |s: &Session| !crate::cmd::fields::selected(s).is_empty() || crate::cmd::references::caret_in_toc(s);
+    let mut d = wordcraft_doc::Document::from_text("Before.\nOld entry\t9\nAlpha\nBeta");
+    {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap();
+        let n = p.len();
+        p.insert_object(n, InlineObject::FieldEnd, &CharProps::default()).unwrap();
+        p.insert_object(0, InlineObject::FieldStart { instr: r#"TOC \o "1-2" \h"#.into(), locked: false, dirty: false }, &CharProps::default())
+            .unwrap();
+    }
+    let mut s = Session::new(d);
+    for (i, style) in [(2, "Heading 1"), (3, "Heading 2")] {
+        run(&mut s, "caret.set", json!({"pos": Pos::body(i, 0)}));
+        run(&mut s, "styles.apply", json!({"style": style}));
+    }
+    let check = |s: &mut Session, what: &str| {
+        let entries: Vec<usize> = (0..s.doc.body.len())
+            .filter(|i| {
+                s.doc.body.get(*i).and_then(|b| b.as_para()).is_some_and(|p| p.props.style.as_deref().is_some_and(|st| st.starts_with("TOC")))
+            })
+            .collect();
+        assert!(!entries.is_empty(), "{what}: no TOC paragraphs: {}", text(s));
+        for (k, i) in entries.iter().enumerate() {
+            let len = s.doc.body.get(*i).and_then(|b| b.as_para()).map_or(0, |p| p.len());
+            // The leftover empty field paragraph before the range (first block) has no menu (minor).
+            if k == 0 && len == 0 {
+                continue;
+            }
+            for off in 0..=len {
+                s.sel = crate::Selection::caret(Pos::body(*i, off));
+                assert!(offered(s), "{what}: no Update Field at block {i} offset {off}: {}", text(s));
+            }
+        }
+    };
+    let bytes = wordcraft_docx::write(&s.doc).unwrap();
+    s = Session::new(wordcraft_docx::read(&bytes).unwrap());
+    let mut blocks = None;
+    for round in 0..3 {
+        run(&mut s, "references.updateToc", json!({}));
+        check(&mut s, &format!("after update {round}"));
+        // No extra blank line per cycle.
+        assert!(blocks.is_none_or(|n| n == s.doc.body.len()), "after update {round}: the document grew: {}", text(&s));
+        blocks = Some(s.doc.body.len());
+        let bytes = wordcraft_docx::write(&s.doc).unwrap();
+        s = Session::new(wordcraft_docx::read(&bytes).unwrap());
+        check(&mut s, &format!("after reopen {round}"));
+    }
+}
+
+/// #2182: with two TOCs only the one Update Table would refresh is offered Update Field; the other
+/// range TOC doesn't claim the menu, so it never refreshes a different table.
+#[test]
+fn toc_menu_targets_the_toc_update_table_refreshes() {
+    use wordcraft_doc::para::InlineObject;
+    use wordcraft_doc::props::CharProps;
+    let mut d = wordcraft_doc::Document::from_text("One\nTwo\nHead\nFirst\nSecond\nTail");
+    for (para, instr) in [(0, r#"TOC \o "1-2""#), (3, r#"TOC \o "1-3""#)] {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(para)).unwrap();
+        let n = p.len();
+        p.insert_object(n, InlineObject::FieldEnd, &CharProps::default()).unwrap();
+        p.insert_object(0, InlineObject::FieldStart { instr: instr.into(), locked: false, dirty: false }, &CharProps::default()).unwrap();
+    }
+    let mut s = Session::new(d);
+    let at = |s: &mut Session, block: usize| {
+        s.sel = crate::Selection::caret(Pos::body(block, 1));
+        crate::cmd::references::caret_in_toc(s)
+    };
+    assert!(at(&mut s, 0), "the first TOC is the one Update Table converts");
+    assert!(!at(&mut s, 3), "the second range TOC is not offered the menu item");
+}
+
 /// Updating a TOC field that had a non-empty result (placeholder from an external generator, #878)
 /// clears the old result so the exported DOCX nests entries inside the field rather than leaving
 /// them after the field's end marker.
@@ -2895,6 +3384,17 @@ fn word_count_includes_numbered_list_labels_in_words_but_not_characters() {
     // so Word excludes it from character counts: "Apple" has 5 characters.
     assert_eq!(v["characters"].as_u64(), Some(5));
     assert_eq!(v["charactersWithSpaces"].as_u64(), Some(5));
+}
+
+#[test]
+fn word_count_excludes_carriage_returns_from_character_counts() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Hello\r\nWorld"}));
+    run(&mut s, "select.all", json!({}));
+    let v = run(&mut s, "review.wordCount", json!({}));
+    assert_eq!(v["words"].as_u64(), Some(2));
+    assert_eq!(v["characters"].as_u64(), Some(10));
+    assert_eq!(v["charactersWithSpaces"].as_u64(), Some(10));
 }
 
 /// The laid-out area of the only text box.
@@ -4100,6 +4600,26 @@ fn navigation_pane_opens_without_changing_view_mode() {
 }
 
 #[test]
+fn interface_theme_queues_a_front_end_request_and_rejects_junk() {
+    // #1861: the session can't paint, so the command asks the front end; the document,
+    // view state and undo stack are untouched.
+    let mut s = s();
+    let dirty = s.dirty;
+    for value in ["light", "dark", "system"] {
+        let r = run(&mut s, "view.interfaceTheme", json!({"value": value}));
+        assert_eq!(r["value"], value);
+        assert_eq!(s.ui_requests.last().unwrap()["interfaceTheme"], value);
+    }
+    let r = run(&mut s, "view.interfaceTheme", json!({}));
+    assert_eq!(r["value"], "toggle");
+    assert_eq!(s.ui_requests.last().unwrap()["toggle"], "interfaceTheme");
+    assert_eq!(s.dirty, dirty);
+    for bad in [json!({"value": "midnight"}), json!({"value": 3})] {
+        assert!(s.run("view.interfaceTheme", &bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn reading_mode_reflows_per_viewport_without_changing_document_or_export() {
     let mut s = s();
     run(&mut s, "text.insert", json!({"text": "A long paragraph for reading. ".repeat(200)}));
@@ -4960,6 +5480,23 @@ fn print_markup_exports_comments() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Kerning for fonts (`w:kern`) at the selection, for the Font dialog: the size it starts at, 0
+/// when off, null when the selected text differs.
+#[test]
+fn format_state_reports_kerning_for_fonts() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Kerned plain"}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "format.set", json!({"props": {"kern": 14}}));
+    assert_eq!(run(&mut s, "format.state", json!({}))["kern"], json!(14.0));
+    run(&mut s, "format.set", json!({"props": {"kern": 0}}));
+    assert_eq!(run(&mut s, "format.state", json!({}))["kern"], json!(0.0));
+    run(&mut s, "select.text", json!({"text": "Kerned"}));
+    run(&mut s, "format.set", json!({"props": {"kern": 12}}));
+    run(&mut s, "select.all", json!({}));
+    assert_eq!(run(&mut s, "format.state", json!({}))["kern"], serde_json::Value::Null);
+}
+
 /// #606: the colour commands behind More Colors… take any `RRGGBB` (with or without `#`, any
 /// case), not only the palette's colours; junk is a params error and changes nothing.
 #[test]
@@ -5009,6 +5546,51 @@ fn documents_open_by_content_when_the_extension_is_wrong() {
     // Matching content still goes the usual way, and garbage stays an error.
     assert!(text(&crate::io::open_bytes("plain.rtf", rtf).unwrap()).contains("Invoice line"));
     assert!(crate::io::open_bytes("broken.doc", b"\x00\x01not a document").is_err());
+}
+
+/// #2853: a Word XML Document (Word 2003 XML or Flat OPC) or a web page saved under a `.doc`
+/// name opens by what it holds, as in Word; it went to the Word 97-2003 reader, which refused it,
+/// and the window showed a blank page.
+#[test]
+fn word_xml_and_web_pages_saved_as_doc_open_by_content() {
+    let text = |doc: &wordcraft_doc::Document| doc.plain_text(StoryRef::Body);
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    run(&mut s, "text.insert", json!({"text": "Truyện ngắn, chương một"}));
+    run(&mut s, "format.bold", json!({}));
+    let word2003 = crate::io::ExportOptions { word2003: true, ..Default::default() };
+    let xml2003 = crate::io::save_bytes_opts("a.xml", &s.doc, &word2003).unwrap();
+    let flat = crate::io::save_bytes("a.xml", &s.doc).unwrap();
+    assert!(xml2003.windows(14).any(|w| w == b"w:wordDocument") && flat.windows(11).any(|w| w == b"pkg:package"));
+    for (what, bytes) in [("Word 2003 XML", &xml2003), ("Flat OPC", &flat)] {
+        for name in ["soulsoul.txt.doc", "Story.DOC", "story.dot", "story.docx", "story.rtf"] {
+            let doc = crate::io::open_bytes(name, bytes).unwrap_or_else(|e| panic!("{what} as {name}: {e}"));
+            assert!(text(&doc).contains("Truyện ngắn, chương một"), "{what} as {name}: {:?}", text(&doc));
+        }
+    }
+    // With a byte-order mark and blank lines before the declaration.
+    let bom = [&[0xEF, 0xBB, 0xBF][..], b"\r\n  ", &xml2003].concat();
+    assert!(text(&crate::io::open_bytes("bom.doc", &bom).unwrap()).contains("chương một"));
+
+    // Web pages: Word's Save as Web Page, and a report generator's HTML under a `.doc` name.
+    let pages: [&str; 3] = [
+        "<html xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:w=\"urn:schemas-microsoft-com:office:word\">\r\n<head><meta charset=utf-8></head>\r\n<body lang=VI><p class=MsoNormal><b>Báo cáo</b> tháng 9</p></body></html>",
+        "\u{FEFF}<!DOCTYPE html>\n<!-- generated -->\n<html><body><h1>Báo cáo</h1><p>tháng 9</p></body></html>",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"x\"><HTML><BODY><P>Báo cáo tháng 9</P></BODY></HTML>",
+    ];
+    for (i, page) in pages.iter().enumerate() {
+        for name in ["report.doc", "report.docx", "report.rtf"] {
+            let doc = crate::io::open_bytes(name, page.as_bytes()).unwrap_or_else(|e| panic!("page {i} as {name}: {e}"));
+            let t = text(&doc);
+            assert!(t.contains("Báo cáo") && t.contains("tháng 9") && !t.contains('<'), "page {i} as {name}: {t:?}");
+        }
+    }
+    // A web page in an unknown extension is still plain text, other XML still no Word document.
+    assert!(text(&crate::io::open_bytes("page.log", pages[1].as_bytes()).unwrap()).contains("<html>"));
+    assert!(crate::io::open_bytes("note.doc", b"<?xml version=\"1.0\"?><note>hi</note>").is_err());
+    // Nor is XML whose root only starts like `html`.
+    for xml in [&b"<htmlish>text</htmlish>"[..], b"<!DOCTYPE htmlish><htmlish>text</htmlish>"] {
+        assert!(crate::io::open_bytes("other.doc", xml).is_err(), "{:?}", String::from_utf8_lossy(xml));
+    }
 }
 
 /// #569: a playlist (.m3u / .m3u8) — or any file with an extension WordCraft doesn't know —
@@ -5381,6 +5963,348 @@ fn split_cells_leaves_the_other_rows_alone() {
     assert_eq!(spans(&s), [vec![1, 1, 1, 1], vec![2, 1, 1]]);
 }
 
+fn table_spans(s: &Session) -> Vec<Vec<usize>> {
+    let t = s.doc.body.iter().find_map(|b| b.as_table()).expect("a table");
+    t.rows.iter().map(|r| r.cells.iter().map(wordcraft_doc::Cell::span).collect()).collect()
+}
+
+fn table_vmerge(s: &Session) -> Vec<Vec<wordcraft_doc::props::VMerge>> {
+    let t = s.doc.body.iter().find_map(|b| b.as_table()).expect("a table");
+    t.rows.iter().map(|r| r.cells.iter().map(|c| c.props.vmerge).collect()).collect()
+}
+
+/// #2592: Split Cells into columns and rows. A one-row cell gets new rows under it, the row's
+/// other cells merging down over them; one undo puts the table back.
+#[test]
+fn split_cells_into_columns_and_rows() {
+    use wordcraft_doc::props::VMerge::{Continue, None as No, Restart};
+    let mut s = table_from("A\tB\nC\tD");
+    let depth = s.undo_depth();
+    run(&mut s, "table.split", json!({"columns": 2, "rows": 2}));
+    assert_eq!(s.undo_depth(), depth + 1);
+    assert_eq!(table_texts(&s), [vec!["A", "", "B"], vec!["", "", ""], vec!["C", "D"]]);
+    assert_eq!(table_spans(&s), [vec![1, 1, 1], vec![1, 1, 1], vec![2, 1]]);
+    assert_eq!(table_vmerge(&s), [vec![No, No, Restart], vec![No, No, Continue], vec![No, No]]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(table_texts(&s), [["A", "B"], ["C", "D"]]);
+    assert_eq!(table_spans(&s), [[1, 1], [1, 1]]);
+    // Rows only.
+    let mut s = table_from("A\tB");
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 3}));
+    assert_eq!(table_texts(&s), [vec!["A", "B"], vec!["", ""], vec!["", ""]]);
+    assert_eq!(table_vmerge(&s), [[No, Restart], [No, Continue], [No, Continue]]);
+}
+
+/// #2592: Merge cells before split merges the selection, then splits the merged cell; without
+/// it every selected cell is split on its own.
+#[test]
+fn split_cells_merge_before_split() {
+    use wordcraft_doc::props::VMerge::None as No;
+    let cell = |r: u32, c: u32| json!({"story": "body", "path": [0, r, c, 0], "off": 0});
+    let mut s = table_from("A\tB\nC\tD");
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 1)}));
+    let depth = s.undo_depth();
+    run(&mut s, "table.split", json!({"columns": 2, "rows": 2}));
+    assert_eq!(s.undo_depth(), depth + 1, "merge and split are one step");
+    assert_eq!(table_spans(&s), [[1, 1], [1, 1]]);
+    assert_eq!(table_vmerge(&s), [[No, No], [No, No]]);
+    assert_eq!(table_texts(&s), [["ABCD", ""], ["", ""]]);
+
+    let mut s = table_from("A\tB\nC\tD");
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 1)}));
+    run(&mut s, "table.split", json!({"columns": 2, "mergeFirst": false}));
+    assert_eq!(table_texts(&s), [["A", "", "B", ""], ["C", "", "D", ""]]);
+    assert_eq!(table_spans(&s), [[1, 1, 1, 1], [1, 1, 1, 1]]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(table_texts(&s), [["A", "B"], ["C", "D"]]);
+
+    // As in Word: merged cells split into at most as many rows as were selected, and cells split
+    // one by one keep their rows.
+    let mut s = table_from("A\tB\nC\tD");
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 0)}));
+    let depth = s.undo_depth();
+    assert!(s.run("table.split", &json!({"columns": 1, "rows": 3})).is_err(), "rows 1 to 2 only");
+    assert!(s.run("table.split", &json!({"columns": 2, "rows": 2, "mergeFirst": false})).is_err());
+    assert_eq!(s.undo_depth(), depth);
+    assert_eq!(table_texts(&s), [["A", "B"], ["C", "D"]]);
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 2}));
+    assert_eq!(table_texts(&s), [["AC", "B"], ["", "D"]]);
+}
+
+/// #2592: a vertically merged cell splits into rows that divide its height; other counts are
+/// refused without changing anything.
+#[test]
+fn split_cells_of_a_vertically_merged_cell() {
+    use wordcraft_doc::props::VMerge::{Continue, None as No, Restart};
+    let cell = |r: u32, c: u32| json!({"story": "body", "path": [0, r, c, 0], "off": 0});
+    let merged = || {
+        let mut s = table_from("A\tB\nC\tD\nE\tF\nG\tH");
+        run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(3, 0)}));
+        run(&mut s, "table.merge", json!({}));
+        s
+    };
+    let mut s = merged();
+    assert_eq!(table_vmerge(&s), [[Restart, No], [Continue, No], [Continue, No], [Continue, No]]);
+    run(&mut s, "table.split", json!({"columns": 2, "rows": 2}));
+    assert_eq!(s.doc.body.iter().find_map(|b| b.as_table()).unwrap().rows.len(), 4, "no new rows");
+    assert_eq!(table_vmerge(&s), [[Restart, Restart, No], [Continue, Continue, No], [Restart, Restart, No], [Continue, Continue, No]]);
+    assert_eq!(table_spans(&s), [[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1]]);
+    // The caret in a continued cell splits the whole merged cell.
+    let mut s = merged();
+    run(&mut s, "caret.set", json!({"pos": cell(2, 0)}));
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 4}));
+    assert_eq!(table_vmerge(&s), [[No, No], [No, No], [No, No], [No, No]]);
+    let mut s = merged();
+    let (depth, before) = (s.undo_depth(), table_vmerge(&s));
+    let e = s.run("table.split", &json!({"columns": 1, "rows": 3})).unwrap_err();
+    assert!(matches!(e, crate::CmdError::Params(_)), "{e:?}");
+    assert!(e.to_string().contains("The number must be a divisor of 4"), "3 doesn't divide 4: {e}");
+    assert_eq!((s.undo_depth(), table_vmerge(&s)), (depth, before));
+    // 1 × 1 on the 4-row cell changes nothing either.
+    let mut s = merged();
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 1}));
+    assert_eq!(table_vmerge(&s), [[Restart, No], [Continue, No], [Continue, No], [Continue, No]]);
+}
+
+/// #2592 review: cells split one by one split a vertically merged cell once, not once per row it
+/// covers, and every other selected cell in two.
+#[test]
+fn split_cells_one_by_one_with_a_merged_cell() {
+    use wordcraft_doc::props::VMerge::{Continue, None as No, Restart};
+    let cell = |r: u32, c: u32| json!({"story": "body", "path": [0, r, c, 0], "off": 0});
+    let merged = || {
+        let mut s = table_from("A\tB\nC\tD");
+        run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 0)}));
+        run(&mut s, "table.merge", json!({}));
+        s
+    };
+    let mut s = merged();
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "table.split", json!({"columns": 2, "mergeFirst": false}));
+    assert_eq!(table_spans(&s), [[1, 1, 1, 1], [1, 1, 1, 1]]);
+    assert_eq!(table_texts(&s), [["AC", "", "B", ""], ["", "", "D", ""]]);
+    assert_eq!(table_vmerge(&s), [[Restart, Restart, No, No], [Continue, Continue, No, No]]);
+    // The merged cell alone is one cell.
+    let mut s = merged();
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 0)}));
+    run(&mut s, "table.split", json!({"columns": 2, "mergeFirst": false}));
+    assert_eq!(table_spans(&s), [[1, 1, 1], [1, 1, 1]]);
+    assert_eq!(table_vmerge(&s), [[Restart, Restart, No], [Continue, Continue, No]]);
+}
+
+/// #2592: Convert Text to Table separates at paragraphs, commas, tabs or another character,
+/// takes a column count and an AutoFit behaviour, and undoes in one step.
+#[test]
+fn convert_text_to_table_dialog_options() {
+    let convert = |text: &str, params: serde_json::Value| {
+        let mut s = s();
+        run(&mut s, "document.setText", json!({"text": text}));
+        run(&mut s, "select.all", json!({}));
+        let depth = s.undo_depth();
+        run(&mut s, "table.fromText", params);
+        assert_eq!(s.undo_depth(), depth + 1);
+        s
+    };
+    let s1 = convert("a;b;c\nd;e", json!({"separator": "other", "char": ";"}));
+    assert_eq!(table_texts(&s1), [["a", "b", "c"], ["d", "e", ""]]);
+    let s1 = convert("a\nb\nc\nd", json!({"separator": "paragraph"}));
+    assert_eq!(table_texts(&s1), [["a"], ["b"], ["c"], ["d"]]);
+    let s1 = convert("a\nb\nc", json!({"separator": "paragraph", "columns": 2}));
+    assert_eq!(table_texts(&s1), [["a", "b"], ["c", ""]]);
+    // More columns than fields pads; fewer wraps a paragraph's fields onto more rows.
+    let s1 = convert("a\tb\tc\nd", json!({"columns": 4}));
+    assert_eq!(table_texts(&s1), [["a", "b", "c", ""], ["d", "", "", ""]]);
+    let s1 = convert("a\tb\tc\nd", json!({"columns": 2}));
+    assert_eq!(table_texts(&s1), [["a", "b"], ["c", ""], ["d", ""]]);
+    let mut s1 = convert("a,b\nc,d", json!({"separator": "comma", "autofit": "fixed"}));
+    let t = |s: &Session| s.doc.body.iter().find_map(|b| b.as_table()).unwrap().clone();
+    assert!(t(&s1).props.fixed);
+    run(&mut s1, "edit.undo", json!({}));
+    assert_eq!(body_texts(&s1), ["a,b", "c,d"]);
+    let s1 = convert("a,b\nc,d", json!({"separator": "comma", "autofit": "window"}));
+    assert_eq!((t(&s1).props.fixed, t(&s1).props.width_pct), (false, Some(100.0)));
+    let s1 = convert("a,b\nc,d", json!({"separator": "comma", "autofit": "contents"}));
+    let width = cmd::page::sect(&s1).text_width();
+    assert!(!t(&s1).props.fixed && t(&s1).total_width() < width / 2.0, "{:?}", t(&s1).grid);
+    // Junk is refused or clamped, never a panic.
+    let mut s1 = s();
+    run(&mut s1, "document.setText", json!({"text": "a-b"}));
+    run(&mut s1, "select.all", json!({}));
+    assert!(s1.run("table.fromText", &json!({"separator": "other"})).is_err(), "no character");
+    assert!(s1.run("table.fromText", &json!({"separator": "other", "char": ""})).is_err());
+    assert!(s1.run("table.fromText", &json!({"separator": "nonsense"})).is_err());
+    assert!(s1.run("table.fromText", &json!({"autofit": "nonsense"})).is_err());
+    assert_eq!(body_texts(&s1), ["a-b"]);
+    run(&mut s1, "table.fromText", json!({"separator": "other", "char": "-", "columns": 1_000_000_000_u64}));
+    assert_eq!(table_texts(&s1).first().map(Vec::len), Some(63));
+}
+
+/// #2592, as Word does: Initial column width Auto gives equal columns across the text width;
+/// a width gives every column that preferred width (kept even when the table is drawn narrower
+/// to fit the text width), with no table width; both leave the table resizing to its contents.
+#[test]
+fn convert_text_to_table_initial_column_width() {
+    let convert = |params: serde_json::Value| {
+        let mut s = s();
+        run(&mut s, "document.setText", json!({"text": "a\tb\tc\nd\te\tf"}));
+        run(&mut s, "select.all", json!({}));
+        let r = s.run("table.fromText", &params);
+        (s, r)
+    };
+    let t = |s: &Session| s.doc.body.iter().find_map(|b| b.as_table()).unwrap().clone();
+    let (s1, _) = convert(json!({"autofit": "initial"}));
+    let width = cmd::page::sect(&s1).text_width();
+    let tb = t(&s1);
+    assert!(!tb.props.fixed && tb.props.width.is_none());
+    assert!(tb.grid.iter().all(|&w| (w - width / 3.0).abs() < 0.1), "{:?}", tb.grid);
+    let (s0, _) = convert(json!({"autofit": "initial", "width": 0}));
+    assert_eq!(t(&s0).grid, tb.grid, "0 is Auto");
+
+    let (s1, _) = convert(json!({"autofit": "initial", "width": 72}));
+    let tb = t(&s1);
+    assert_eq!(tb.grid, [72.0, 72.0, 72.0]);
+    assert!(tb.rows.iter().flat_map(|r| &r.cells).all(|c| c.props.width == Some(72.0)));
+    assert!(!tb.props.fixed && tb.props.width.is_none());
+
+    // 5 in columns are stored as such but drawn within the text width.
+    let (mut s1, _) = convert(json!({"width": 360}));
+    assert_eq!(t(&s1).grid, [360.0, 360.0, 360.0]);
+    let drawn: f32 = s1.layout().pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            wordcraft_layout::Placed::Cell { rect, row: 0, .. } => Some(rect.w),
+            _ => None,
+        })
+        .sum();
+    assert!(drawn > 0.0 && drawn <= width + 0.5, "{drawn} vs {width}");
+
+    // A width is the Initial column width only: AutoFit to contents or the window ignores it.
+    for mode in ["contents", "window"] {
+        let (with, _) = convert(json!({"autofit": mode, "width": 72}));
+        let (without, _) = convert(json!({ "autofit": mode }));
+        let cell_widths = |s: &Session| t(s).rows.iter().flat_map(|r| r.cells.iter().map(|c| c.props.width)).collect::<Vec<_>>();
+        assert_eq!((t(&with).grid, cell_widths(&with)), (t(&without).grid, cell_widths(&without)), "{mode}");
+    }
+
+    // More than 22 in, or less than nothing, is refused without converting.
+    for bad in [json!(1585), json!(-1), json!("wide")] {
+        let (s1, r) = convert(json!({ "width": bad }));
+        assert!(r.is_err(), "{bad}");
+        assert!(s1.doc.body.iter().all(|b| b.as_table().is_none()));
+    }
+}
+
+/// #2592, as Word does: a vertically merged cell splits into 1 to its height rows; its height
+/// cuts it into one cell per row, 1 × 1 changes nothing, a number that doesn't divide the height or more than it is refused with Word's messages and
+/// nothing changes, also when neighbours are merged with it first.
+#[test]
+fn split_cells_of_a_merged_cell_follow_word() {
+    use wordcraft_doc::props::VMerge::{Continue, None as No, Restart};
+    let cell = |r: u32, c: u32| json!({"story": "body", "path": [0, r, c, 0], "off": 0});
+    let merged = || {
+        let mut s = table_from("A\tB\nC\tD\nE\tF\nG\tH");
+        run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 0)}));
+        run(&mut s, "table.merge", json!({}));
+        s
+    };
+    for params in [json!({"columns": 1, "rows": 3}), json!({"columns": 1, "rows": 4}), json!({"columns": 2, "rows": 3})] {
+        let mut s = merged();
+        let (depth, before) = (s.undo_depth(), table_vmerge(&s));
+        let e = s.run("table.split", &params).unwrap_err().to_string();
+        assert!(e.contains("The number must be between 1 and 2"), "{e}");
+        assert_eq!((s.undo_depth(), table_vmerge(&s)), (depth, before));
+    }
+    // 1 × 1 on a merged cell is a no-op (Word, 2 to 5 rows).
+    let mut s = merged();
+    let before = table_vmerge(&s);
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 1}));
+    assert_eq!(table_vmerge(&s), before);
+    {
+        let params = json!({"columns": 1, "rows": 2});
+        let mut s = merged();
+        run(&mut s, "table.split", params.clone());
+        assert_eq!(table_vmerge(&s), [[No, No], [No, No], [No, No], [No, No]], "{params}");
+        assert_eq!(table_texts(&s)[0][0], "AC");
+        assert_eq!(table_texts(&s)[1][0], "");
+    }
+    // A 3-row cell: 2 rows is not a divisor (Word's alert, nothing changes); 1 × 1 is a no-op; 3 rows gives one cell per row.
+    let tall = || {
+        let mut s = table_from("A\tB\nC\tD\nE\tF\nG\tH");
+        run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(2, 0)}));
+        run(&mut s, "table.merge", json!({}));
+        s
+    };
+    for params in [json!({"columns": 1, "rows": 2}), json!({"columns": 2, "rows": 2})] {
+        let mut s = tall();
+        let (depth, before) = (s.undo_depth(), table_vmerge(&s));
+        let e = s.run("table.split", &params).unwrap_err();
+        assert!(matches!(e, crate::CmdError::Params(_)), "{e:?}");
+        assert!(e.to_string().contains("The number must be a divisor of 3"), "{e}");
+        assert_eq!((s.undo_depth(), table_vmerge(&s)), (depth, before));
+    }
+    let mut s = tall();
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 1}));
+    assert_eq!(table_vmerge(&s), [[Restart, No], [Continue, No], [Continue, No], [No, No]]);
+    assert_eq!(table_texts(&s)[0][0], "ACE");
+    let mut s = tall();
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 3}));
+    assert_eq!(table_vmerge(&s), [[No, No], [No, No], [No, No], [No, No]]);
+    // Merge cells before split, then 1 × 1: one cell, as before (merging through Split Cells).
+    let mut s = table_from("A\tB\nC\tD");
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 1)}));
+    run(&mut s, "table.split", json!({"columns": 1, "rows": 1}));
+    assert_eq!(table_spans(&s), [[2], [2]]);
+    assert_eq!(table_vmerge(&s), [[wordcraft_doc::props::VMerge::Restart], [wordcraft_doc::props::VMerge::Continue]]);
+    // The merged cell and its neighbours, merged first: the limit is the selection's height.
+    let mut s = merged();
+    run(&mut s, "select.range", json!({"anchor": cell(0, 0), "focus": cell(1, 1)}));
+    let e = s.run("table.split", &json!({"columns": 1, "rows": 3})).unwrap_err().to_string();
+    assert!(e.contains("The number must be between 1 and 2"), "{e}");
+}
+
+/// #2592, as Word does: a cell merged across columns splits into equal parts inside its old
+/// width; the other rows' cells keep their widths.
+#[test]
+fn split_cells_across_columns_into_equal_parts() {
+    let cell = |r: u32, c: u32| json!({"story": "body", "path": [0, r, c, 0], "off": 0});
+    let widths = |s: &Session| -> Vec<Vec<f32>> {
+        let t = s.doc.body.iter().find_map(|b| b.as_table()).unwrap();
+        (0..t.rows.len())
+            .map(|r| {
+                let row = &t.rows[r];
+                (0..row.cells.len()).map(|c| (0..row.cells[c].span()).map(|k| t.grid[t.grid_col(r, c) + k]).sum()).collect()
+            })
+            .collect()
+    };
+    for (across, parts) in [(2, 3), (3, 2), (2, 2)] {
+        let mut s = table_from("A\tB\tC\nD\tE\tF");
+        // Unequal columns, as in a real document.
+        s.doc.table_mut(StoryRef::Body, &wordcraft_doc::Path(vec![0])).unwrap().grid = vec![100.0, 50.0, 150.0];
+        run(&mut s, "select.range", json!({"anchor": cell(1, 0), "focus": cell(1, across - 1)}));
+        run(&mut s, "table.merge", json!({}));
+        let (top, old) = (widths(&s)[0].clone(), widths(&s)[1][0]);
+        run(&mut s, "table.split", json!({"columns": parts, "rows": 1}));
+        let w = widths(&s);
+        let new: Vec<f32> = w[1].iter().take(parts as usize).copied().collect();
+        assert!(new.iter().all(|x| (x - old / parts as f32).abs() < 0.1), "{across}->{parts}: {w:?}");
+        let mut top_lines: Vec<f32> = Vec::new();
+        let mut x = 0.0;
+        for v in &w[0] {
+            x += v;
+            top_lines.push(x);
+        }
+        let mut expect = Vec::new();
+        let mut x = 0.0;
+        for v in &top {
+            x += v;
+            expect.push(x);
+        }
+        assert_eq!(top_lines.len(), expect.len(), "{across}->{parts}: {w:?}");
+        assert!(top_lines.iter().zip(&expect).all(|(a, b)| (a - b).abs() < 0.1), "{across}->{parts}: {w:?}");
+    }
+}
+
 /// #385: note options for the whole document or one section, and converting notes, which undoes
 /// in one step.
 #[test]
@@ -5432,6 +6356,26 @@ fn note_options_per_section_and_convert_notes() {
     assert!(s.run("references.convertNotes", &json!({"to": "sideways"})).is_err());
 }
 
+#[test]
+fn next_footnote_skips_endnotes() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "A"}));
+    run(&mut s, "references.footnote", json!({"text": "Fn1"}));
+    s.sel = crate::Selection::caret(s.doc.end_of(StoryRef::Body));
+    run(&mut s, "text.insert", json!({"text": "B"}));
+    run(&mut s, "references.endnote", json!({"text": "En1"}));
+    s.sel = crate::Selection::caret(s.doc.end_of(StoryRef::Body));
+    run(&mut s, "text.insert", json!({"text": "C"}));
+    run(&mut s, "references.footnote", json!({"text": "Fn2"}));
+
+    s.sel = crate::Selection::caret(Pos::body(0, 0));
+    run(&mut s, "references.nextFootnote", json!({}));
+    assert_eq!(s.sel.focus.off, 1);
+
+    run(&mut s, "references.nextFootnote", json!({}));
+    assert_eq!(s.sel.focus.off, 9);
+}
+
 /// A tiny synthetic Polish Hunspell dictionary (written for these tests). Real dictionaries are
 /// installed on the system, never bundled; every Polish test installs this same one.
 fn polish_test_dictionary() {
@@ -5459,7 +6403,11 @@ const PORTUGUESE_TEST_DIC: &str = "11\nsaudade\ncoração\ne\nele\ndisse\nnão\n
 fn dictionaries_folder_option_is_saved_searched_and_reported() {
     let dir = std::env::temp_dir().join(format!("wc-engine-dictionaries-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for (name, aff, dic) in [("pl_PL", POLISH_TEST_AFF, POLISH_TEST_DIC), ("pt_BR", PORTUGUESE_TEST_AFF, PORTUGUESE_TEST_DIC)] {
+    for (name, aff, dic) in [
+        ("pl_PL", POLISH_TEST_AFF, POLISH_TEST_DIC),
+        ("pt_BR", PORTUGUESE_TEST_AFF, PORTUGUESE_TEST_DIC),
+        ("id_ID", INDONESIAN_TEST_AFF, INDONESIAN_TEST_DIC),
+    ] {
         std::fs::write(dir.join(format!("{name}.aff")), aff).unwrap();
         std::fs::write(dir.join(format!("{name}.dic")), dic).unwrap();
     }
@@ -5476,6 +6424,7 @@ fn dictionaries_folder_option_is_saved_searched_and_reported() {
     let file = |lang: &str| dicts.iter().find(|d| d["language"] == lang).map(|d| d["file"].clone());
     assert_eq!(file("pl"), Some(json!(dir.join("pl_PL.dic").to_string_lossy())));
     assert_eq!(file("pt"), Some(json!(dir.join("pt_BR.dic").to_string_lossy())));
+    assert_eq!(file("id"), Some(json!(dir.join("id_ID.dic").to_string_lossy())));
     // Polish text is checked against the folder's dictionary.
     run(&mut s, "document.setText", json!({"text": "rzeka płynie żeka"}));
     run(&mut s, "select.all", json!({}));
@@ -5522,6 +6471,49 @@ fn portuguese_proofing_through_the_review_commands() {
     run(&mut s, "review.addToDictionary", json!({"word": "coraçao"}));
     let left = run(&mut s, "review.issues", json!({}));
     assert_eq!(left.as_array().unwrap().len(), 1, "{left}");
+}
+
+fn indonesian_test_dictionary() {
+    wordcraft_proof::id::install_dictionary(INDONESIAN_TEST_AFF, INDONESIAN_TEST_DIC).unwrap();
+}
+
+// Hand-written synthetic fixture (no system dictionary data).
+const INDONESIAN_TEST_AFF: &str = "SET UTF-8\nFLAG UTF-8\nTRY aniekrumgtslhbdopy\nSFX A Y 1\nSFX A 0 an .\n";
+const INDONESIAN_TEST_DIC: &str = "8\nrumah\nsekolah\nanak\nbermain\ndi\nmakan/A\nsaya\nkami\n";
+
+/// Indonesian proofing (#498) through the same commands as Review, F7, Change and Add to
+/// Dictionary.
+#[test]
+fn indonesian_proofing_through_the_review_commands() {
+    indonesian_test_dictionary();
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "Saya di sekolha, anak anak bermain."}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "review.language", json!({"lang": "id_id", "default": true}));
+    assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("id-ID"));
+    assert_eq!(run(&mut s, "format.state", json!({}))["lang"], "id-ID");
+    let issues = run(&mut s, "review.issues", json!({}));
+    let arr = issues.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "{issues}");
+    assert!(arr.iter().all(|i| i["lang"] == "id"), "{issues}");
+    assert!(
+        arr.iter().any(|i| i["text"] == "sekolha" && i["kind"] == "spelling" && i["suggestions"].as_array().unwrap().iter().any(|s| s == "sekolah")),
+        "{issues}"
+    );
+    assert!(arr.iter().any(|i| i["text"] == "anak anak" && i["kind"] == "grammar" && i["suggestions"][0] == "anak-anak"), "{issues}");
+    run(&mut s, "caret.docStart", json!({}));
+    assert_eq!(run(&mut s, "review.spelling", json!({}))["text"], "sekolha");
+    run(&mut s, "review.applySuggestion", json!({"text": "sekolah"}));
+    assert!(text(&s).starts_with("Saya di sekolah,"), "{}", text(&s));
+    run(&mut s, "select.text", json!({"text": "sekolah"}));
+    run(&mut s, "text.insert", json!({"text": "zqkataidengine"}));
+    assert_eq!(run(&mut s, "review.issues", json!({})).as_array().unwrap().len(), 2);
+    run(&mut s, "review.addToDictionary", json!({"word": "zqkataidengine"}));
+    let left = run(&mut s, "review.issues", json!({}));
+    let left = left.as_array().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["kind"], "grammar");
+    assert_eq!(left[0]["lang"], "id");
 }
 
 /// Czech proofing through the same commands as Review, F7, Change and Add to Dictionary.
@@ -6230,6 +7222,10 @@ fn ordinals_and_untagged_text_sort_and_sum_as_numbers() {
     let mut t = column_table("pl-PL", &["10.", "2.", "1."]);
     run(&mut t, "table.sort", json!({"column": 0, "header": false}));
     assert_eq!(column_texts(&t), ["1.", "2.", "10."]);
+
+    let mut t = column_table("en-US", &["10", "(50)", "20"]);
+    run(&mut t, "table.sort", json!({"column": 0, "header": false}));
+    assert_eq!(column_texts(&t), ["(50)", "10", "20"]);
 
     let mut s = s();
     s.set_editing_language(Some("pl-PL"));
@@ -7230,5 +8226,268 @@ fn vertical_align_command_sets_justified() {
         run(&mut s, "layout.pageSetup", json!({"section": props.clone()}));
         assert_eq!(va(&s), want, "{name}");
         assert_eq!(serde_json::to_value(crate::cmd::page::sect(&s)).unwrap()["valign"], json!(name));
+    }
+}
+
+/// #1876 review: only Web Layout wraps to the window's `web_width`. Draft and Outline keep a fixed
+/// 800 pt column, also after a visit to a wide Web Layout, and the window width is never serialized.
+#[test]
+fn draft_keeps_its_column_after_web_layout() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Draft text wraps in a fixed column. ".repeat(80)}));
+    run(&mut s, "view.draft", json!({}));
+    let before = s.layout();
+    assert_eq!(before.pages[0].w, 800.0);
+    run(&mut s, "view.webLayout", json!({}));
+    s.view.web_width = 1400.0;
+    assert_eq!(s.layout().pages[0].w, 1400.0, "Web Layout follows the window");
+    run(&mut s, "view.draft", json!({}));
+    assert_eq!(s.layout().pages[0].w, 800.0, "Draft never sees Web Layout's window width");
+    run(&mut s, "view.outline", json!({}));
+    assert_eq!(s.layout().pages[0].w, 800.0, "nor does Outline");
+    let serialized = serde_json::to_value(&s.view).unwrap();
+    assert!(serialized.get("webWidth").is_none(), "a window width is not view state to keep");
+    let restored: crate::ViewState = serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.web_width, 800.0);
+}
+
+/// Insert › Quick Parts and AutoText list, insert and save the document's own building blocks
+/// (its glossary, kept in the file); saving with `"in": "document"` is undoable.
+#[test]
+fn quick_parts_use_the_documents_building_blocks() {
+    use wordcraft_doc::{BuildingBlock, CharProps, Paragraph, para_block};
+    let entry = |name: &str, gallery: &str, text: &str| BuildingBlock {
+        name: name.into(),
+        gallery: gallery.into(),
+        category: "General".into(),
+        blocks: vec![para_block(Paragraph::with_text(text, CharProps::default()))],
+        ..Default::default()
+    };
+    let mut d = wordcraft_doc::Document::new();
+    d.glossary = vec![entry("Signature", "docParts", "Kind regards, Ann"), entry("Disclaimer", "autoTxt", "No warranty.")];
+    let bytes = wordcraft_docx::write(&d).unwrap();
+    let mut s = Session::new(crate::io::open_bytes("glossary.docx", &bytes).unwrap());
+    let listed = run(&mut s, "insert.quickParts", json!({}));
+    assert_eq!(listed["document"], json!(["Signature"]), "{listed}");
+    assert_eq!(listed["parts"], json!(["Signature"]), "{listed}");
+    assert_eq!(run(&mut s, "insert.autoText", json!({}))["document"], json!(["Disclaimer"]));
+    run(&mut s, "insert.quickParts", json!({"insert": "Signature"}));
+    assert!(text(&s).contains("Kind regards, Ann"), "{}", text(&s));
+    run(&mut s, "insert.autoText", json!({"insert": "Disclaimer"}));
+    assert!(text(&s).contains("No warranty."), "{}", text(&s));
+
+    // Saved into the document: undoable, and kept in its file.
+    run(&mut s, "select.text", json!({"text": "Kind regards"}));
+    s.dirty = false;
+    let listed = run(&mut s, "insert.quickParts", json!({"save": "Closing", "in": "document"}));
+    assert_eq!(listed["document"], json!(["Signature", "Closing"]), "{listed}");
+    assert!(s.building_blocks.is_empty(), "not in the session's store");
+    assert!(s.dirty);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.doc.glossary.iter().any(|e| e.name == "Closing"));
+    run(&mut s, "edit.redo", json!({}));
+    let back = crate::io::open_bytes("glossary.docx", &wordcraft_docx::write(&s.doc).unwrap()).unwrap();
+    let closing = back.glossary.iter().find(|e| e.name == "Closing").expect("saved entry");
+    assert_eq!(closing.gallery, "docParts");
+    assert_eq!(closing.blocks.iter().filter_map(|b| b.as_para()).map(|p| p.text.as_str()).collect::<String>(), "Kind regards");
+    assert_eq!(back.glossary.len(), 3);
+
+    // Without "in", saving stays in the session; deleting removes the name where it lives.
+    run(&mut s, "insert.quickParts", json!({"save": "Scratch"}));
+    assert!(s.building_blocks.contains_key("Scratch") && !s.doc.glossary.iter().any(|e| e.name == "Scratch"));
+    run(&mut s, "insert.quickParts", json!({"delete": "Scratch"}));
+    run(&mut s, "insert.quickParts", json!({"delete": "Closing"}));
+    assert!(s.building_blocks.is_empty());
+    assert_eq!(s.doc.glossary.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Signature", "Disclaimer"]);
+    assert!(s.run("insert.quickParts", &json!({"save": " ", "in": "document"})).is_err());
+    assert!(s.run("insert.quickParts", &json!({"insert": "Closing"})).is_err());
+}
+
+#[test]
+fn toc_collects_cell_headings() {
+    use std::sync::Arc;
+    use wordcraft_doc::{Block, CharProps, InlineObject, Paragraph, Path, Table, para_block};
+    let mut earlier = Table::new(1, 1, 180.0);
+    earlier.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("Earlier", CharProps::default()).styled("Heading1"))];
+    let mut nested = Table::new(1, 1, 180.0);
+    nested.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("Nested", CharProps::default()).styled("Heading3"))];
+    let mut later = Paragraph::with_text("Later", CharProps::default());
+    later.props.outline_level = Some(1);
+    let mut table = Table::new(1, 1, 180.0);
+    table.rows[0].cells[0].blocks =
+        vec![para_block(later), Arc::new(Block::Table(nested)), para_block(Paragraph::with_text("Unlisted", CharProps::default()))];
+    let mut toc = Paragraph::with_text("Contents", CharProps::default()).styled("TOCHeading");
+    toc.insert_object(
+        toc.len(),
+        InlineObject::Field {
+            instr: r#"TOC \o "1-3" \h \u"#.into(),
+            result: String::new(),
+            locked: false,
+            dirty: true,
+            code: false,
+            form: String::new(),
+        },
+        &CharProps::default(),
+    )
+    .unwrap();
+    let mut d = wordcraft_doc::Document::new();
+    d.body = vec![
+        Arc::new(Block::Table(earlier)),
+        para_block(toc),
+        para_block(Paragraph::with_text("\u{000C}", CharProps::default())),
+        Arc::new(Block::Table(table)),
+    ];
+    let mut s = Session::new(wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap());
+    for command in ["references.updateFields", "references.updateToc"] {
+        run(&mut s, command, json!({}));
+        let entries: Vec<_> = s
+            .doc
+            .body
+            .iter()
+            .filter_map(|b| b.as_para())
+            .filter(|p| p.props.style.as_deref().is_some_and(|st| st.starts_with("TOC") && st != "TOCHeading"))
+            .cloned()
+            .collect();
+        assert_eq!(entries.len(), 3, "{command}: {}", text(&s));
+        let layout = s.layout();
+        let bookmarks = s.doc.bookmarks();
+        let mut pages = Vec::new();
+        for (p, title) in entries.iter().zip(["Earlier", "Later", "Nested"]) {
+            let value = p.plain_text();
+            assert!(value.starts_with(title), "{value}");
+            let shown: u32 = value.rsplit_once('\t').unwrap().1.parse().unwrap();
+            let name = p.props_of_char(0).link.as_ref().unwrap().strip_prefix('#').unwrap();
+            let (_, target) = bookmarks.iter().find(|(n, _)| n == name).unwrap();
+            assert!(target.path.depth() > 0);
+            let paragraph = s.doc.para(StoryRef::Body, &target.path).unwrap();
+            assert_eq!(paragraph.plain_text(), title);
+            let caret = layout.caret(target).unwrap();
+            assert_eq!(shown, layout.pages[caret.page].number, "{title}");
+            pages.push(caret.page);
+        }
+        assert!(pages[1] > pages[0]);
+        assert_eq!(bookmarks.iter().filter(|(n, _)| n.starts_with("_Toc")).count(), 3);
+        // The block-index-only link API must not misidentify a cell paragraph as a body block.
+        let targets = s.run("link.targets", &json!({})).unwrap();
+        assert_eq!(targets["headings"].as_array().unwrap().len(), 0);
+        assert!(s.doc.para(StoryRef::Body, &Path::top(1)).is_some());
+    }
+}
+
+#[test]
+fn toc_keeps_direct_number_tabs() {
+    use wordcraft_doc::props::{CharProps, NumRef, TabAlign, TabLeader, TabStop};
+    let left = TabStop { pos: 24.0, align: TabAlign::Left, leader: TabLeader::None };
+    let right = TabStop { pos: 179.5, align: TabAlign::Right, leader: TabLeader::Dot };
+    let mut d = wordcraft_doc::Document::from_text("Contents\n\n1.\tAlpha\t9\nAlpha\nBeta");
+    d.last_section.page_w = 220.0;
+    d.last_section.margin_left = 20.0;
+    d.last_section.margin_right = 20.0;
+    d.styles.get_mut("TOC2").unwrap().para.tabs = Some(vec![right]);
+    let num = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+    {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap();
+        p.props.style = Some("TOCHeading".into());
+        p.insert_object(
+            p.len(),
+            wordcraft_doc::InlineObject::Field {
+                instr: r#"TOC \o "1-2""#.into(),
+                result: String::new(),
+                locked: false,
+                dirty: true,
+                code: false,
+                form: String::new(),
+            },
+            &CharProps::default(),
+        )
+        .unwrap();
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap();
+        p.props.style = Some("TOC2".into());
+        p.props.tabs = Some(vec![right]);
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(2)).unwrap();
+        p.props.style = Some("TOC2".into());
+        p.props.tabs = Some(vec![left, right]);
+    }
+    for i in [3, 4] {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(i)).unwrap();
+        p.props.style = Some("Heading2".into());
+        p.props.numbering = Some(NumRef { num, level: 0 });
+    }
+    let bytes = wordcraft_docx::write(&d).unwrap();
+    let mut s = Session::new(wordcraft_docx::read(&bytes).unwrap());
+    for command in ["references.updateFields", "references.updateToc", "references.toc"] {
+        run(&mut s, command, json!({}));
+        let layout = s.layout();
+        let mut entries = 0;
+        for (i, b) in s.doc.body.iter().enumerate() {
+            let Some(p) = b.as_para().filter(|p| p.props.style.as_deref() == Some("TOC2")) else { continue };
+            entries += 1;
+            assert!(p.props.tabs.as_ref().is_some_and(|tabs| tabs.contains(&left)), "{command}: {:?}", p.props.tabs);
+            let title = p.text.find('\t').unwrap() + 1;
+            let page = p.text.rfind('\t').unwrap() + 1;
+            let start = layout.caret(&Pos::body(i, title)).unwrap();
+            let end = layout.caret(&Pos::body(i, page)).unwrap();
+            assert_eq!((start.page, start.top), (end.page, end.top), "{command}: {:?}", p.plain_text());
+            assert!((start.x - 44.0).abs() < 1.0, "{command}: {}", start.x);
+            assert!(end.x > 180.0, "{command}: {}", end.x);
+        }
+        assert_eq!(entries, 2);
+    }
+}
+
+/// #2601: Insert › Drop Cap's menu and Drop Cap Options. Dropped and In margin take the
+/// documented defaults (3 lines, distance 0, the text's font); the dialog's values (lines,
+/// distance, font) are kept and clamped; None takes the drop cap away with its font; each is one
+/// undo step and the caret stays where it was. The command is off where Word disables it: an
+/// empty paragraph, a table cell, a paragraph that starts with a space.
+#[test]
+fn drop_cap_options_set_position_lines_distance_and_font() {
+    let props = |s: &Session| s.doc.body.first().and_then(|b| b.as_para()).map(|p| p.props.clone()).unwrap_or_default();
+    let cap = |s: &Session| {
+        let p = props(s);
+        (p.drop_cap, p.drop_cap_margin, p.drop_cap_distance, p.drop_cap_font)
+    };
+    let mut s = s();
+    assert!(s.run("insert.dropCap", &json!({})).is_err(), "off in an empty paragraph");
+    run(&mut s, "text.insert", json!({"text": "Once upon a time"}));
+    let caret = s.sel.clone();
+    run(&mut s, "insert.dropCap", json!({"position": "margin"}));
+    assert_eq!(cap(&s), (Some(3), Some(true), None, None));
+    assert_eq!(s.sel, caret, "the caret stays");
+    run(&mut s, "insert.dropCap", json!({"position": "dropped", "lines": 5, "distance": 7.2, "font": "Liberation Mono"}));
+    assert_eq!(cap(&s), (Some(5), None, Some(7.2), Some("Liberation Mono".to_string())));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(cap(&s), (Some(3), Some(true), None, None), "one undo step");
+    run(&mut s, "insert.dropCap", json!({"lines": 99, "distance": 1e30, "font": "  "}));
+    assert_eq!(cap(&s), (Some(10), None, Some(wordcraft_doc::resolve::MAX_DROP_CAP_DISTANCE), None), "clamped");
+    run(&mut s, "insert.dropCap", json!({"lines": -4, "distance": -3, "position": "sideways"}));
+    assert_eq!(cap(&s), (Some(1), None, None, None), "junk falls back to the nearest valid value");
+    run(&mut s, "insert.dropCap", json!({"font": "Liberation Mono", "distance": 3}));
+    run(&mut s, "insert.dropCap", json!({"position": "none"}));
+    assert_eq!(cap(&s), (None, None, None, None), "None takes the letter's font back too");
+    assert!(props(&s).is_empty());
+    run(&mut s, "insert.dropCap", json!({"lines": 2}));
+    run(&mut s, "insert.dropCap", json!({"lines": 0}));
+    assert_eq!(cap(&s), (None, None, None, None), "0 lines is None, as before");
+
+    let mut s = self::s();
+    run(&mut s, "text.insert", json!({"text": " leading space"}));
+    assert!(s.run("insert.dropCap", &json!({})).is_err(), "off when the paragraph starts with a space");
+    let mut s = self::s();
+    run(&mut s, "insert.table", json!({"rows": 1, "cols": 1}));
+    run(&mut s, "text.insert", json!({"text": "Cell"}));
+    assert!(s.sel.focus.path.cell().is_some());
+    assert!(s.run("insert.dropCap", &json!({})).is_err(), "off in a table cell");
+}
+
+#[test]
+fn rtf_list_round_trip_keeps_text() {
+    for cmd in ["para.bullets", "para.numbering", "para.multilevel", "para.defineBullet"] {
+        let mut s = Session::new(wordcraft_doc::Document::from_text("first\nsecond"));
+        run(&mut s, "select.all", json!({}));
+        run(&mut s, cmd, json!({}));
+        let bytes = crate::io::save_bytes("x.rtf", &s.doc).unwrap();
+        let d = crate::io::open_bytes("x.rtf", &bytes).unwrap();
+        assert_eq!(d.plain_text(StoryRef::Body), "first\nsecond", "{cmd}");
     }
 }

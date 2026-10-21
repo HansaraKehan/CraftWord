@@ -20,6 +20,7 @@ pub enum InsertDialog {
     SmartArt(crate::dialogs_smart_art::SmartArtForm),
     ChartType(crate::dialogs_chart::ChartTypeForm),
     ChartData(crate::dialogs_chart::ChartDataForm),
+    DropCap(DropCapForm),
 }
 
 impl InsertDialog {
@@ -32,6 +33,7 @@ impl InsertDialog {
             InsertDialog::ChartType(f) if f.change => "changeChartType",
             InsertDialog::ChartType(_) => "insertChart",
             InsertDialog::ChartData(_) => "chartData",
+            InsertDialog::DropCap(_) => "dropCap",
         }
     }
 
@@ -45,13 +47,14 @@ impl InsertDialog {
             InsertDialog::ChartType(f) if f.change => "Change Chart Type",
             InsertDialog::ChartType(_) => "Insert Chart",
             InsertDialog::ChartData(_) => "Edit Data",
+            InsertDialog::DropCap(_) => "Drop Cap",
         }
     }
 }
 
 /// The dialog `ui.dialog` opens by `name`: `columns`, `symbol`, `specialCharacters`, `field`,
 /// `insertChart`, `changeChartType` or `chartData` (the last two for the selected chart), or
-/// `insertSmartArt`.
+/// `insertSmartArt`, or `dropCap` (Drop Cap Options…, where the paragraph can take one).
 pub fn open(name: &str, app: &WordApp) -> Option<InsertDialog> {
     Some(match name {
         "columns" => InsertDialog::Columns(ColumnsForm::read(app)),
@@ -62,6 +65,7 @@ pub fn open(name: &str, app: &WordApp) -> Option<InsertDialog> {
         "insertChart" => InsertDialog::ChartType(crate::dialogs_chart::ChartTypeForm::new(app, false)?),
         "changeChartType" => InsertDialog::ChartType(crate::dialogs_chart::ChartTypeForm::new(app, true)?),
         "chartData" => InsertDialog::ChartData(crate::dialogs_chart::ChartDataForm::new(app)?),
+        "dropCap" => InsertDialog::DropCap(DropCapForm::read(app)?),
         _ => return None,
     })
 }
@@ -75,6 +79,7 @@ pub fn body(app: &mut WordApp, ui: &mut Ui, d: &mut InsertDialog) -> bool {
         InsertDialog::SmartArt(f) => crate::dialogs_smart_art::picker_ui(app, ui, f),
         InsertDialog::ChartType(f) => crate::dialogs_chart::type_ui(app, ui, f),
         InsertDialog::ChartData(f) => crate::dialogs_chart::data_ui(app, ui, f),
+        InsertDialog::DropCap(f) => drop_cap_ui(app, ui, f),
     }
 }
 
@@ -84,16 +89,102 @@ pub(crate) fn buttons(ui: &mut Ui, ok: &str, cancel: &str, ok_enabled: bool) -> 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(tl!(cancel)).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            let (okb, cancelb) =
+                crate::dialogs::ok_cancel_responses(ui, |ui| ui.add_enabled(ok_enabled, crate::widgets::primary_button(ui, tl!(ok))), tl!(cancel));
+            if cancelb.clicked() || crate::dialogs::cancel_key_pressed(ui) {
                 r.1 = true;
             }
-            let okb = ui.add_enabled(ok_enabled, crate::widgets::primary_button(ui, tl!(ok)));
             if okb.clicked() || (ok_enabled && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 r.0 = true;
             }
         });
     });
     r
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drop Cap (#2601)
+
+/// The Drop Cap dialog's fields (Insert › Drop Cap › Drop Cap Options…). `distance` is in the
+/// interface unit.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DropCapForm {
+    /// `none`, `dropped` or `margin`.
+    pub position: String,
+    /// The letter's font: its own, else the text's.
+    pub font: String,
+    /// The text's font: choosing it leaves the letter without a font of its own.
+    pub text_font: String,
+    pub lines: u32,
+    pub distance: f32,
+}
+
+impl DropCapForm {
+    /// The paragraph's drop cap; `None` where it can't take one (Word greys the button out).
+    pub fn read(app: &WordApp) -> Option<DropCapForm> {
+        if !crate::widgets::enabled(app, "insert.dropCap") {
+            return None;
+        }
+        let st = wordcraft_engine::cmd::insert::drop_cap_state(&app.session);
+        Some(DropCapForm {
+            position: st.position.into(),
+            font: st.font.clone().unwrap_or_else(|| st.text_font.clone()),
+            text_font: st.text_font,
+            lines: u32::from(st.lines.clamp(1, 10)),
+            distance: st.distance.max(0.0) / crate::options::unit().pt_per_unit(),
+        })
+    }
+
+    /// `insert.dropCap` parameters.
+    pub fn params(&self) -> Value {
+        if self.position == "none" {
+            return json!({"position": "none"});
+        }
+        let font = Some(self.font.trim()).filter(|f| !f.is_empty() && *f != self.text_font);
+        json!({
+            "position": self.position,
+            "lines": self.lines.clamp(1, 10),
+            "distance": (self.distance * crate::options::unit().pt_per_unit()).max(0.0),
+            "font": font,
+        })
+    }
+}
+
+fn drop_cap_ui(app: &mut WordApp, ui: &mut Ui, f: &mut DropCapForm) -> bool {
+    ui.label(egui::RichText::new(tl!("Position")).font(semibold(12.5)));
+    ui.horizontal(|ui| {
+        for (v, l) in [("none", "None"), ("dropped", "Dropped"), ("margin", "In margin")] {
+            ui.radio_value(&mut f.position, v.to_string(), tl!(l));
+        }
+    });
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(tl!("Options")).font(semibold(12.5)));
+    let fams = app.previews.families();
+    let preview = app.previews.font_preview_fn();
+    let unit = crate::options::unit();
+    ui.add_enabled_ui(f.position != "none", |ui| {
+        egui::Grid::new("dropcap").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+            ui.label(tl!("Font:"));
+            if let Some(v) = crate::widgets::font_combo(ui, "dropcap_font", 190.0, &f.font, &fams, Some(&*preview))
+                && v != crate::widgets::ADD_FONT
+            {
+                f.font = v;
+            }
+            ui.end_row();
+            ui.label(tl!("Lines to drop:"));
+            ui.add(egui::DragValue::new(&mut f.lines).range(1..=10));
+            ui.end_row();
+            ui.label(tl!("Distance from text:"));
+            ui.add(egui::DragValue::new(&mut f.distance).speed(0.01).range(0.0..=22.0 * 72.0 / unit.pt_per_unit()).measure(unit).max_decimals(2));
+            ui.end_row();
+        });
+    });
+    let (ok, cancel) = buttons(ui, "OK", "Cancel", true);
+    if ok {
+        let _ = app.run("insert.dropCap", f.params());
+    }
+    ok || cancel
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -112,12 +203,14 @@ pub struct ColumnsForm {
     pub cols: Vec<(f32, f32)>,
     /// Line between columns.
     pub separator: bool,
-    /// `section`, `document` or `forward` (this point forward).
+    /// `section`, `document`, `forward` (this point forward) or `selection` (selected text).
     pub apply: String,
     /// The section's text width, in the interface unit.
     pub text_width: f32,
     /// The document has more than one section (offer "This section").
     pub sections: bool,
+    /// Text is selected that can take columns of its own (offer "Selected text", #2024).
+    pub selection: bool,
 }
 
 impl ColumnsForm {
@@ -131,14 +224,21 @@ impl ColumnsForm {
         let c = &sp.columns;
         let count = c.count.clamp(1, 12);
         let sections = app.session.doc.sections().len() > 1;
+        let selection = wordcraft_engine::cmd::page::selection_sectionable(&app.session);
+        let apply = match (selection, sections) {
+            (true, _) => "selection",
+            (false, true) => "section",
+            (false, false) => "document",
+        };
         let mut f = ColumnsForm {
             count,
             equal: true,
             cols: Vec::new(),
             separator: c.separator,
-            apply: if sections { "section" } else { "document" }.into(),
+            apply: apply.into(),
             text_width: sp.text_width() / k,
             sections,
+            selection,
         };
         if c.widths.len() == count as usize && count > 1 {
             f.equal = false;
@@ -437,6 +537,9 @@ fn columns_ui(app: &mut WordApp, ui: &mut Ui, f: &mut ColumnsForm) -> bool {
         let mut options = vec![("document", "Whole document"), ("forward", "This point forward")];
         if f.sections {
             options.insert(0, ("section", "This section"));
+        }
+        if f.selection {
+            options.push(("selection", "Selected text"));
         }
         let shown = options.iter().find(|(k, _)| *k == f.apply).map(|(_, l)| *l).unwrap_or("This section");
         egui::ComboBox::from_id_salt("columns_apply").selected_text(tl!(shown)).width(180.0).show_ui(ui, |ui| {
@@ -1327,6 +1430,54 @@ mod tests {
         WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("one\ntwo")), Default::default())
     }
 
+    fn drop_cap_form(a: &mut WordApp) -> Option<DropCapForm> {
+        a.run("ui.dialog", json!({"name": "dropCap"})).unwrap();
+        match a.dialog.take() {
+            Some(crate::dialogs::Dialog::Insert(d)) => match *d {
+                InsertDialog::DropCap(f) => Some(f),
+                d => panic!("not drop cap: {d:?}"),
+            },
+            _ => None,
+        }
+    }
+
+    /// #2601: Drop Cap Options… opens on the paragraph's drop cap (the defaults without one:
+    /// 3 lines, distance 0, the text's font) in the interface unit, and OK runs `insert.dropCap`
+    /// with the chosen values; it reopens showing them. Choosing the text's own font sends none.
+    #[test]
+    fn drop_cap_dialog_prefills_and_applies() {
+        let mut a = app();
+        a.run("file.options", json!({"units": "centimeters"})).unwrap();
+        let mut f = drop_cap_form(&mut a).expect("the dialog");
+        assert_eq!((f.position.as_str(), f.lines, f.distance), ("none", 3, 0.0));
+        assert_eq!(f.font, f.text_font, "the text's font");
+        assert!(!f.font.is_empty());
+        assert_eq!(f.params(), json!({"position": "none"}));
+        f.position = "margin".into();
+        f.lines = 4;
+        f.distance = 1.0;
+        a.run("insert.dropCap", f.params()).unwrap();
+        let props = |a: &WordApp| a.session.doc.body.first().and_then(|b| b.as_para()).map(|p| p.props.clone()).unwrap_or_default();
+        let p = props(&a);
+        assert_eq!((p.drop_cap, p.drop_cap_margin, p.drop_cap_font.as_deref()), (Some(4), Some(true), None));
+        assert!((p.drop_cap_distance.unwrap_or_default() - wordcraft_geom::PT_PER_CM).abs() < 0.01, "1 cm: {:?}", p.drop_cap_distance);
+        let mut f = drop_cap_form(&mut a).expect("the dialog");
+        assert_eq!((f.position.as_str(), f.lines), ("margin", 4));
+        assert!((f.distance - 1.0).abs() < 0.01, "{} cm", f.distance);
+        f.position = "dropped".into();
+        f.font = "Liberation Mono".into();
+        a.run("insert.dropCap", f.params()).unwrap();
+        let p = props(&a);
+        assert_eq!((p.drop_cap, p.drop_cap_margin, p.drop_cap_font.as_deref()), (Some(4), None, Some("Liberation Mono")));
+        assert_eq!(drop_cap_form(&mut a).map(|f| f.font), Some("Liberation Mono".to_string()));
+        assert_eq!(wordcraft_engine::cmd::insert::drop_cap_state(&a.session).position, "dropped", "the menu checks Dropped");
+
+        // Where Word greys Drop Cap out, there is no dialog.
+        a.run("caret.docEnd", json!({})).unwrap();
+        a.run("text.newParagraph", json!({})).unwrap();
+        assert!(drop_cap_form(&mut a).is_none(), "an empty paragraph");
+    }
+
     /// More Columns: two unequal columns with a line between apply as one undo step.
     #[test]
     fn columns_dialog_applies_unequal_columns_in_one_step() {
@@ -1355,6 +1506,21 @@ mod tests {
         assert!(!again.equal && again.separator && again.cols.len() == 2);
         a.run("edit.undo", json!({})).unwrap();
         assert_eq!(wordcraft_engine::cmd::page::sect(&a.session).columns.count, 1);
+    }
+
+    /// With text selected, More Columns applies to the selected text by default, as in Word
+    /// (#2024): the other paragraphs keep one column.
+    #[test]
+    fn columns_dialog_applies_to_the_selected_text() {
+        let mut a = app();
+        assert!(!ColumnsForm::read(&a).selection, "no selection, no Selected text");
+        a.run("select.paragraph", json!({})).unwrap();
+        let mut f = ColumnsForm::read(&a);
+        assert_eq!((f.selection, f.apply.as_str()), (true, "selection"));
+        f.preset("two");
+        a.run("layout.columns", f.params()).unwrap();
+        let counts: Vec<u32> = a.session.doc.sections().iter().map(|(_, x)| x.columns.count).collect();
+        assert_eq!(counts, vec![2, 1]);
     }
 
     /// The Symbol dialog inserts in the chosen font and remembers the symbol.

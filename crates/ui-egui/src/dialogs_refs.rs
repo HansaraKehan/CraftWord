@@ -13,6 +13,8 @@ use wordcraft_engine::cmd::references::FieldCode;
 
 use crate::WordApp;
 use crate::dialogs::{Dialog, buttons};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::file_dialogs::{AfterPick, Asked, FileDialogRequest};
 use crate::theme::{Tokens, semibold};
 
 #[derive(Clone, Debug, Serialize)]
@@ -240,8 +242,9 @@ impl CaptionForm {
                 labels.push(l.clone());
             }
         }
-        // In a table the caption is for the table.
-        let in_table = app.session.sel.focus.path.depth() > 0
+        // In a table the caption is for the table, unless a picture or shape in it is selected.
+        let in_table = wordcraft_engine::cmd::objects::object_selection(&app.session).is_none()
+            && app.session.sel.focus.path.depth() > 0
             && app
                 .session
                 .doc
@@ -349,11 +352,26 @@ fn caption_ui(app: &mut WordApp, ui: &mut Ui, f: &mut CaptionForm) -> Next {
 const REF_TYPES: [(&str, &str); 5] =
     [("heading", "Heading"), ("bookmark", "Bookmark"), ("equation", "Equation"), ("figure", "Figure"), ("table", "Table")];
 
+/// The Reference types to pick from: [`REF_TYPES`], then each caption label of the person's own
+/// (Insert Caption › New Label, or already in the document's captions) as `label:<Name>` (#2940).
+fn ref_types(app: &WordApp) -> Vec<(String, String)> {
+    let mut types: Vec<(String, String)> = REF_TYPES.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+    let in_document = wordcraft_engine::cmd::citations::caption_labels(&app.session);
+    for l in app.ui.caption_labels.iter().chain(&in_document) {
+        let value = format!("label:{l}");
+        if !BUILT_IN_LABELS.contains(&l.as_str()) && !types.iter().any(|(v, _)| *v == value) {
+            types.push((value, l.clone()));
+        }
+    }
+    types
+}
+
 /// The Cross-reference dialog's fields.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossRefForm {
-    /// `heading`, `bookmark`, `equation`, `figure` or `table`.
+    /// `heading`, `bookmark`, `equation`, `figure`, `table`, or `label:<Name>` for a caption label
+    /// of the person's own.
     pub to: String,
     /// `text`, `page`, `number` or `aboveBelow`.
     pub show: String,
@@ -389,7 +407,8 @@ fn cross_ref_ui(app: &mut WordApp, ui: &mut Ui, f: &mut CrossRefForm) -> Next {
     let was = f.to.clone();
     egui::Grid::new("xref_opts").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
         ui.label(tl!("Reference type:"));
-        let types: Vec<(String, &str)> = REF_TYPES.iter().map(|(v, l)| (v.to_string(), *l)).collect();
+        let types = ref_types(app);
+        let types: Vec<(String, &str)> = types.iter().map(|(v, l)| (v.clone(), l.as_str())).collect();
         choice(ui, "xref_type", &mut f.to, &types);
         ui.end_row();
         ui.label(tl!("Insert reference to:"));
@@ -1064,6 +1083,8 @@ fn source_ui(app: &mut WordApp, ui: &mut Ui, f: &mut SourceForm) -> Next {
     if ok || cancel { Next::Close } else { Next::Stay }
 }
 
+/// The Source Manager: the document's sources with New…, Import…, Edit…, Delete and Insert
+/// Citation; each button runs the command an agent would.
 fn sources_ui(app: &mut WordApp, ui: &mut Ui, selected: &mut Option<usize>) -> Next {
     let t = Tokens::get(ui.ctx());
     let list: Vec<String> = app
@@ -1096,6 +1117,14 @@ fn sources_ui(app: &mut WordApp, ui: &mut Ui, selected: &mut Option<usize>) -> N
     ui.horizontal(|ui| {
         if ui.button(tl!("New…")).clicked() {
             next = go(RefsDialog::Source(Box::new(SourceForm::new(false, true))));
+        }
+        // Import… (desktop): a Word bibliography file (`b:Sources`, Word's own Sources.xml) adds
+        // its sources to this document (#2640); the list above follows on the next frame.
+        #[cfg(not(target_arch = "wasm32"))]
+        if ui.button(tl!("Import…")).clicked()
+            && let Asked::Done(Err(e)) = app.ask_file(FileDialogRequest::Open { purpose: "sources".into() }, AfterPick::Sources)
+        {
+            app.status(e);
         }
         if ui.add_enabled(src.is_some(), egui::Button::new(tl!("Edit…"))).clicked()
             && let Some(s) = &src
@@ -1216,6 +1245,68 @@ mod tests {
         assert_eq!(CrossRefForm::read(&a, "table").params(), None);
     }
 
+    /// #2940: a label made with Insert Caption › New Label is a Reference type of the
+    /// Cross-reference dialog, whether the document has a caption with it yet or came with one.
+    #[test]
+    fn cross_reference_dialog_offers_custom_caption_labels() {
+        let mut a = app("Rock\nSee ");
+        let types = |a: &WordApp| ref_types(a).into_iter().map(|(v, _)| v).collect::<Vec<_>>();
+        assert_eq!(types(&a), ["heading", "bookmark", "equation", "figure", "table"]);
+        // Made in the Caption dialog but not used yet: listed, with nothing to pick.
+        a.ui.caption_labels.push("Plate".into());
+        assert!(types(&a).contains(&"label:Plate".to_string()));
+        assert_eq!(CrossRefForm::read(&a, "label:Plate").params(), None);
+        // A document's own captions bring theirs, once, and Figure stays the built-in one.
+        a.ui.caption_labels.clear();
+        a.run("select.text", json!({"text": "Rock"})).unwrap();
+        a.run("references.caption", json!({"label": "Specimen", "text": "A rock"})).unwrap();
+        a.run("caret.docEnd", json!({})).unwrap();
+        a.run("references.caption", json!({"label": "Figure", "text": "Another"})).unwrap();
+        let t = types(&a);
+        assert_eq!(t.iter().filter(|v| v.as_str() == "label:Specimen").count(), 1, "{t:?}");
+        assert!(!t.iter().any(|v| v == "label:Figure"), "{t:?}");
+        let mut f = CrossRefForm::read(&a, "label:Specimen");
+        assert_eq!(f.targets, vec!["Specimen 1: A rock".to_string()]);
+        f.show = "number".into();
+        a.dialog = None;
+        a.run("caret.docEnd", json!({})).unwrap();
+        a.run("insert.crossReference", f.params().unwrap()).unwrap();
+        assert!(a.session.doc.plain_text(StoryRef::Body).ends_with("Specimen 1"), "{}", a.session.doc.plain_text(StoryRef::Body));
+    }
+
+    /// #2940: through the window: the dialog open on a custom label lists its caption, and the
+    /// Insert button puts a reference to it in the text. (The Reference type box and its items
+    /// are not in the accessibility tree the test harness clicks, so the type is set on the form.)
+    #[test]
+    fn cross_reference_dialog_inserts_a_reference_to_a_custom_label() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut a = app("Rock\nSee ");
+        a.run("select.text", json!({"text": "Rock"})).unwrap();
+        a.run("references.caption", json!({"label": "Specimen", "text": "A rock", "format": "ROMAN"})).unwrap();
+        a.run("caret.docEnd", json!({})).unwrap();
+        assert_eq!(a.run("insert.crossReference", json!({})).unwrap(), json!({"pending": "crossReference"}));
+        let form = CrossRefForm::read(&a, "label:Specimen");
+        assert_eq!(form.targets, vec!["Specimen I: A rock".to_string()]);
+        a.dialog = Some(Dialog::Refs(Box::new(RefsDialog::CrossRef(form))));
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::Window, "Cross-reference");
+        h.get_all_by_role_and_label(Role::Button, "Insert").last().expect("the dialog's Insert button").click();
+        h.run_steps(3);
+        assert!(h.state().dialog.is_none(), "Insert closes the dialog");
+        let text = h.state().session.doc.plain_text(StoryRef::Body);
+        assert!(text.ends_with("See Specimen I: A rock"), "{text}");
+        assert!(instrs(h.state()).iter().any(|i| i.starts_with("REF _Ref")), "{:?}", instrs(h.state()));
+    }
+
     /// #402: Mark Entry opens with the selection; Insert Index opens with Word's defaults and
     /// reads the index back; both write their switches.
     #[test]
@@ -1292,5 +1383,54 @@ mod tests {
         a.run("references.sources", json!({"add": src})).unwrap();
         assert!(a.session.doc.plain_text(StoryRef::Body).contains("(Rivera, 2025)"), "{}", a.session.doc.plain_text(StoryRef::Body));
         assert_eq!(a.session.doc.sources.len(), 1);
+    }
+
+    /// #2640: the Source Manager's Import… asks the host's file dialog for a Word bibliography
+    /// file (`b:Sources`, Word's own `Sources.xml`) and adds its sources to the document, shown
+    /// in the list at once.
+    #[test]
+    fn the_source_manager_imports_a_word_sources_file() {
+        use egui_kittest::kittest::Queryable;
+
+        let dir = std::env::temp_dir().join(format!("wc-refs-import-sources-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Sources.xml");
+        std::fs::write(
+            &path,
+            r#"<b:Sources xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography">
+  <b:Source><b:Tag>Riv21</b:Tag><b:SourceType>Book</b:SourceType><b:Title>Shared Spaces</b:Title><b:Year>2021</b:Year></b:Source>
+  <b:Source><b:Tag>Oka19</b:Tag><b:SourceType>Book</b:SourceType><b:Title>Kilns and Clay</b:Title><b:Year>2019</b:Year></b:Source>
+</b:Sources>"#,
+        )
+        .unwrap();
+
+        let mut a = app("Studios matter ");
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let (seen, picked) = (asked.clone(), path.to_string_lossy().to_string());
+        a.services.pick_open = Some(Box::new(move |purpose| {
+            *seen.borrow_mut() = purpose.to_string();
+            Some(picked.clone())
+        }));
+        assert_eq!(a.run("references.sources", json!({})).unwrap(), json!({"pending": "sourceManager"}));
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        h.get_by_label("Import…").click();
+        for _ in 0..4 {
+            h.step();
+        }
+        assert_eq!(*asked.borrow(), "sources", "the host can offer Word sources files");
+        assert_eq!(h.state().session.doc.sources.len(), 2);
+        assert!(h.state().status_msg.as_ref().is_some_and(|(m, _)| m.contains("Imported 2 sources")), "{:?}", h.state().status_msg);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

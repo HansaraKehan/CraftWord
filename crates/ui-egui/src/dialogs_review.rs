@@ -12,7 +12,7 @@ use wordcraft_engine::Password;
 use wordcraft_engine::cmd::tools::AutoCorrectPrefs;
 
 use crate::WordApp;
-use crate::theme::semibold;
+use crate::theme::{Tokens, semibold};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "form", rename_all = "camelCase")]
@@ -68,10 +68,14 @@ fn buttons(ui: &mut Ui, ok_enabled: bool) -> (bool, bool) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            let (okb, cancelb) = crate::dialogs::ok_cancel_responses(
+                ui,
+                |ui| ui.add_enabled(ok_enabled, crate::widgets::primary_button(ui, tl!("OK"))),
+                tl!("Cancel"),
+            );
+            if cancelb.clicked() || crate::dialogs::cancel_key_pressed(ui) {
                 r.1 = true;
             }
-            let okb = ui.add_enabled(ok_enabled, crate::widgets::primary_button(ui, tl!("OK")));
             if okb.clicked() {
                 r.0 = true;
             }
@@ -349,6 +353,8 @@ impl AutoCorrectForm {
             "bullets": o.bullets,
             "numbering": o.numbering,
             "borderLines": o.border_lines,
+            "autoAddFirstLetter": o.auto_add_first_letter,
+            "autoAddInitialCaps": o.auto_add_initial_caps,
         })
     }
 }
@@ -441,6 +447,10 @@ fn autocorrect_tab(app: &mut WordApp, ui: &mut Ui, f: &mut AutoCorrectForm) {
     let typed = f.from.trim().to_lowercase();
     let mut picked: Option<(String, String)> = None;
     egui::ScrollArea::vertical().id_salt("ac_list").max_height(170.0).auto_shrink([false, true]).show(ui, |ui| {
+        if !list.iter().any(|(a, _, _)| typed.is_empty() || a.to_lowercase().starts_with(&typed)) {
+            // #3036: the filter matches nothing — say so instead of showing an empty box.
+            ui.label(egui::RichText::new(tl!("(none)")).small().color(Tokens::get(ui.ctx()).text_dim));
+        }
         egui::Grid::new("ac_list_grid").num_columns(2).spacing(vec2(8.0, 1.0)).striped(true).show(ui, |ui| {
             for (a, b, _) in list.iter().filter(|(a, _, _)| typed.is_empty() || a.to_lowercase().starts_with(&typed)).take(500) {
                 let selected = f.from == *a;
@@ -479,6 +489,8 @@ fn autocorrect_tab(app: &mut WordApp, ui: &mut Ui, f: &mut AutoCorrectForm) {
 
 fn exceptions(app: &mut WordApp, ui: &mut Ui, f: &mut AutoCorrectForm) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.checkbox(&mut f.options.auto_add_first_letter, tl!("Automatically add words to list (First Letter)"));
+        ui.checkbox(&mut f.options.auto_add_initial_caps, tl!("Automatically add words to list (INitial CAps)"));
         ui.label(tl!("Don't capitalize after:"));
         let list = f.options.exception_list();
         let mut picked = None;
@@ -654,6 +666,9 @@ fn setup_ui(app: &mut WordApp, ui: &mut Ui, st: &mut RestrictPane) {
         ui.label(egui::RichText::new(tl!("The password is optional; without it anyone can stop the protection.")).small());
         passwords(ui, st, true);
         ui.horizontal(|ui| {
+            // macOS puts Cancel before OK.
+            let mac = cfg!(target_os = "macos");
+            let mut cancel = mac && ui.button(tl!("Cancel")).clicked();
             if ui.button(tl!("OK")).clicked() {
                 if st.password != st.confirm {
                     st.message = tl!("The passwords don't match.").to_string();
@@ -677,7 +692,8 @@ fn setup_ui(app: &mut WordApp, ui: &mut Ui, st: &mut RestrictPane) {
                     st.confirm = Password::default();
                 }
             }
-            if ui.button(tl!("Cancel")).clicked() {
+            cancel |= !mac && ui.button(tl!("Cancel")).clicked();
+            if cancel {
                 st.asking = false;
                 st.password = Password::default();
                 st.confirm = Password::default();
@@ -738,10 +754,13 @@ fn enforced_ui(app: &mut WordApp, ui: &mut Ui, st: &mut RestrictPane, mode: &str
         ui.label(egui::RichText::new(tl!("Type the password to stop the protection.")).small());
         passwords(ui, st, false);
         ui.horizontal(|ui| {
+            // macOS puts Cancel before OK.
+            let mac = cfg!(target_os = "macos");
+            let cancel_first = mac && ui.button(tl!("Cancel")).clicked();
             if ui.button(tl!("OK")).clicked() {
                 stop(app, st);
             }
-            if ui.button(tl!("Cancel")).clicked() {
+            if cancel_first || (!mac && ui.button(tl!("Cancel")).clicked()) {
                 st.asking = false;
                 st.password = Password::default();
             }
@@ -829,5 +848,46 @@ mod tests {
         assert_eq!(p["caseChanges"], false);
         assert_eq!(p["showIn"], "new");
         assert!(p.get("original").is_none());
+    }
+
+    /// #3036: the Replace list says so when the filter matches nothing instead of going blank.
+    #[test]
+    fn the_autocorrect_list_says_when_the_filter_matches_nothing() {
+        let mut app = app("");
+        app.session.prefs.autocorrect.entries.push(("brb".to_string(), "be right back".to_string()));
+        app.run("tools.autocorrect", json!({})).unwrap();
+        let texts = |h: &egui_kittest::Harness<'static, WordApp>| -> Vec<String> {
+            h.output()
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        assert!(!texts(&h).iter().any(|t| t.contains("(none)")), "entries show, no hint");
+        match &mut h.state_mut().dialog {
+            Some(crate::dialogs::Dialog::Review(d)) => match &mut **d {
+                ReviewDialog::AutoCorrect(f) => f.from = "zzz".to_string(),
+                _ => panic!("the AutoCorrect form is open"),
+            },
+            _ => panic!("the AutoCorrect dialog is open"),
+        }
+        for _ in 0..2 {
+            h.step();
+        }
+        assert!(texts(&h).iter().any(|t| t.contains("(none)")), "no matches: the hint shows");
     }
 }

@@ -156,6 +156,11 @@ impl ListKind {
     }
 }
 
+/// The bullet a level of a plain bulleted list shows: • ○ ▪ repeating (`level` is zero-based).
+pub fn default_bullet(level: usize) -> char {
+    ['•', '○', '▪'][level % 3]
+}
+
 fn bullet_level(i: usize, c: char) -> Level {
     Level {
         format: NumFormat::Bullet,
@@ -188,8 +193,8 @@ pub fn levels_for(kind: ListKind) -> Vec<Level> {
             let lvl = |format: NumFormat, text: String| Level { format, text, indent: ind, hanging: 18.0, ..Level::default() };
             let n = i + 1;
             match kind {
-                ListKind::Bullet => bullet_level(i, ['•', '○', '▪'][i % 3]),
-                ListKind::BulletChar(c) => bullet_level(i, if i == 0 { c } else { ['•', '○', '▪'][i % 3] }),
+                ListKind::Bullet => bullet_level(i, default_bullet(i)),
+                ListKind::BulletChar(c) => bullet_level(i, if i == 0 { c } else { default_bullet(i) }),
                 ListKind::Numbered => lvl(cyc(NumFormat::Decimal, NumFormat::LowerLetter, NumFormat::LowerRoman), format!("%{n}.")),
                 ListKind::NumberedParen => lvl(cyc(NumFormat::Decimal, NumFormat::LowerLetter, NumFormat::LowerRoman), format!("%{n})")),
                 ListKind::UpperLetter => lvl(cyc(NumFormat::UpperLetter, NumFormat::LowerLetter, NumFormat::LowerRoman), format!("%{n}.")),

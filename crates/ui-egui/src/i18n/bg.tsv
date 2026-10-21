@@ -147,6 +147,7 @@
 	Apply to:	Прилагане към:
 	Whole document	Целия документ
 	This section	Този раздел
+	Selected text	Избрания текст
 	Fill	Запълване
 	Setting:	Настройка:
 	3-D	3-D
@@ -514,6 +515,10 @@
 	More templates →	Още шаблони →
 	Move or Resize	Преместване или преоразмеряване
 	Multilevel List	Многостепенен списък
+	Multilevel List Library	Библиотека с многостепенни списъци
+	Article I.	Член I.
+	Chapter 1	Глава 1
+	Section 1.01	Раздел 1.01
 	Multiple Pages	Няколко страници
 	Name (A–Z)	Име (А–Я)
 	Name:	Име:
@@ -791,6 +796,8 @@
 	Space before/after:	Разстояние преди/след:
 	Spacing	Разстояние
 	Spacing (pt):	Разстояние (пт):
+	Kerning for fonts:	Кернинг на шрифтове:
+	Points and above	пт и повече
 	Speech	Реч
 	Spelling & Grammar	Правопис и граматика
 	Spelling &\nGrammar	Правопис и\nграматика
@@ -1400,6 +1407,8 @@
 	Customize Ribbon	Персонализиране на лентата
 	Add to Quick Access Toolbar	Добавяне към лентата с инструменти за бърз достъп
 	Remove from Quick Access Toolbar	Премахване от лентата с инструменти за бърз достъп
+	Hide Quick Access Toolbar	Скриване на лентата с инструменти за бърз достъп
+	Show Quick Access Toolbar	Показване на лентата с инструменти за бърз достъп
 	Customize the Ribbon…	Персонализиране на лентата…
 	Customize Quick Access Toolbar…	Персонализиране на лентата с инструменти за бърз достъп…
 	More Commands…	Още команди…
@@ -1726,6 +1735,7 @@
 	Hyphenation zone:	Зона на сричкопренасяне:
 	Italian	Италиански
 	Croatian	Хърватски
+	Indonesian	Индонезийски
 	Japanese	Японски
 	Korean	Корейски
 	Limit consecutive hyphens to:	Ограничаване на последователните пренасяния до:
@@ -2209,6 +2219,8 @@
 	Math AutoCorrect	Автокорекция на математически изрази
 	More >>	Още >>
 	Moves	Премествания
+	Moved from:	Преместено от:
+	Moved to:	Преместено в:
 	New document	Нов документ
 	No changes (read only)	Без промени (само за четене)
 	Only allow this kind of editing:	Разрешаване само на този вид редактиране:
@@ -2400,6 +2412,7 @@
 	{name} already exists. Choose Save again to replace it.	{name} вече съществува. Изберете „Запазване“ отново, за да го замените.
 	This folder can't be read: {error}	Тази папка не може да бъде прочетена: {error}
 	Showing the first {count} items.	Показани са първите {count} елемента.
+	No items to show.	Няма елементи за показване.
 	File name:	Име на файла:
 	Browse in WordCraft…	Разглеждане в WordCraft…
 	Open a file with WordCraft's own browser when the system file dialog doesn't appear.	Отваряне на файл чрез собствения браузър на WordCraft, когато системният диалогов прозорец за файлове не се появява.
@@ -2489,6 +2502,10 @@
 	Contains	Съдържа
 	Does not contain	Не съдържа
 	{count} of {total} recipients will be merged.	Ще бъдат обединени {count} от {total} получатели.
+	Find in list:	Търсене в списъка:
+	Any field	Всяко поле
+	Matches: {count}	Съвпадения: {count}
+	Show only records that will be merged	Показване само на записите за сливане
 	Take the last match on the page	Взимай последното съвпадение на страницата
 	Show its list number	Показвай номера му в списъка
 	Show its number relative to this field	Показвай номера му спрямо това поле
@@ -2621,3 +2638,53 @@
 # Reading Mode column widths (#1040)
 	Narrow	Тясна
 	Medium	Средна
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Обединяване на клетките преди разделяне
+	Table size	Размер на таблицата
+	AutoFit behavior	Поведение при автопобиране
+	Initial column width:	Начална ширина на колоните:
+	AutoFit to contents	Автопобиране по съдържанието
+	AutoFit to window	Автопобиране по прозореца
+	Separate text at	Разделяне на текста при
+	Commas	Запетаи
+	Other:	Друго:
+	The number must be between 1 and {max}.	Числото трябва да е между 1 и {max}.
+	The measurement must be between {min} and {max}.	Размерът трябва да е между {min} и {max}.
+	Recently Used Fonts	Наскоро използвани шрифтове
+	All Fonts	Всички шрифтове
+	Spike	Натрупване
+	Insert Spike	Вмъкване на натрупаното
+# Add Font status (#1789)
+	Added 1 font	Добавен 1 шрифт
+	Added {n} fonts	Добавени шрифтове: {n}
+	{added}; {count} couldn't be read: {names}	{added}; не можаха да се прочетат ({count}): {names}
+	{names} and {n} more	{names} и още {n}
+	{added}; {n} skipped (limit {max})	{added}; пропуснати: {n} (ограничение {max})
+	nothing is selected	нищо не е избрано
+	select a picture or shape first	първо изберете картина или фигура
+	select recipients first	първо изберете получатели
+	select two or more pictures or shapes first (Shift+click)	изберете две или повече картини или фигури (Shift+щракване)
+	text boxes can't go inside a text box	текстови полета не могат да са в текстово поле
+	the cursor isn't in a table	курсорът не е в таблица
+	{name} options	{name}: опции
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	Вградена
+	In margin	В полето
+	Drop Cap Options…	Опции за главна буква…
+	Lines to drop:	Редове на буквата:
+	Distance from text:	Разстояние от текста:
+	Distance from text	Разстояние от текста
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	абзацът е празен
+	the paragraph starts with a space	абзацът започва с интервал
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Заключване на пропорциите
+	Relative to original picture size	Спрямо оригиналния размер на картината
+	Original size	Оригинален размер
+	{width} × {height} pixels	{width} × {height} пиксела
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Въведете размер в произволна единица, например 5 cm или 300 px. Другата страна се променя съответно, така че картината запазва пропорциите си.
+
+	Import…	Импортиране…

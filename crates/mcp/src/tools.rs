@@ -88,8 +88,8 @@ pub fn tool_definitions() -> Value {
         tool(
             "open_document",
             "Open",
-            "Open a .docx, .doc, .odt, .rtf, .md, .tex, .html, .txt or .json file, or any other text file (.m3u, .log, .ini…) as plain text.",
-            obj(json!({"path": s("File path")}), &["path"]),
+            "Open a .docx, .doc, .odt, .rtf, .md, .tex, .html, .txt or .json file, or any other text file (.m3u, .log, .ini…) as plain text. Give `password` for a protected file; without it the call fails asking for one.",
+            obj(json!({"path": s("File path"), "password": s("Password, if the file is protected")}), &["path"]),
             false
         ),
         tool(
@@ -209,7 +209,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, a: &Value) -> ToolResult {
             ToolResult::json(&Value::Array(out))
         }
         "new_document" => wrap(exec(b, "file.new", json!({"template": st("template").unwrap_or("blank")}))),
-        "open_document" => wrap(exec(b, "file.open", json!({"path": st("path").unwrap_or("")}))),
+        "open_document" => wrap(exec(b, "file.open", json!({"path": st("path").unwrap_or(""), "password": st("password")}))),
         "save_document" => {
             let p = st("path");
             let ext = p.and_then(|x| x.rsplit('.').next()).unwrap_or("").to_ascii_lowercase();
@@ -272,5 +272,64 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, a: &Value) -> ToolResult {
         "key" => wrap(b.call("ui.key", a.clone())),
         "ui_inspect" => wrap(b.call("ui.inspect", json!({}))),
         other => ToolResult::error(format!("unknown tool `{other}`")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A backend that keeps what it was asked for, so a test can read the forwarded params.
+    struct Recording {
+        seen: Option<(String, Value)>,
+    }
+
+    impl Backend for Recording {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            self.seen = Some((method.to_string(), params));
+            Ok(json!({"encrypted": true}))
+        }
+        fn has_ui(&self) -> bool {
+            false
+        }
+        fn describe(&self) -> String {
+            "recording".into()
+        }
+    }
+
+    /// What the backend was asked for: `file.open` runs through `engine.execute`, so the
+    /// command and its parameters are nested one level down.
+    fn forwarded(args: Value) -> Value {
+        let mut b = Recording { seen: None };
+        let r = call_tool(&mut b, "open_document", &args);
+        assert!(!r.is_error, "open_document failed: {:?}", r);
+        let (method, mut call) = b.seen.expect("the backend was called");
+        assert_eq!(method, "engine.execute");
+        assert_eq!(call["command"], json!("file.open"));
+        call["params"].take()
+    }
+
+    #[test]
+    fn open_document_forwards_the_password_to_file_open() {
+        let p = forwarded(json!({"path": "/tmp/a.docx", "password": "s3cret"}));
+        assert_eq!(p["path"], json!("/tmp/a.docx"));
+        assert_eq!(p["password"], json!("s3cret"));
+    }
+
+    /// Without a password the parameter stays null rather than an empty string: `file.open` reads
+    /// an empty one as "no password given", so a protected file would come back unprotected.
+    #[test]
+    fn open_document_without_a_password_passes_null() {
+        assert_eq!(forwarded(json!({"path": "/tmp/a.docx"}))["password"], Value::Null);
+    }
+
+    /// The password has to be in the schema, or a client has no way to know it can be sent.
+    #[test]
+    fn the_schema_advertises_the_password_as_optional() {
+        let tools = tool_definitions();
+        let open = tools.as_array().expect("the tools are a list").iter().find(|t| t["name"] == "open_document").expect("open_document is offered");
+        let schema = &open["inputSchema"];
+        assert!(schema["properties"]["password"].is_object(), "the schema offers no password");
+        assert_eq!(schema["required"], json!(["path"]), "the password stays optional");
     }
 }

@@ -41,18 +41,19 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "lt" | "LT" => '<',
         "gt" | "GT" => '>',
         "quot" | "QUOT" => '"',
-        "apos" => '\'',
-        "nbsp" => '\u{00A0}',
+        "apos" | "APOS" => '\'',
+        "nbsp" | "NBSP" => '\u{00A0}',
         "ensp" => '\u{2002}',
         "emsp" => '\u{2003}',
         "thinsp" => '\u{2009}',
         "shy" => '\u{00AD}',
-        "copy" => '©',
-        "reg" => '®',
-        "trade" => '™',
+        "copy" | "COPY" => '©',
+        "reg" | "REG" => '®',
+        "trade" | "TRADE" => '™',
         "hellip" => '…',
         "mdash" => '—',
         "ndash" => '–',
+        "minus" => '−',
         "lsquo" => '‘',
         "rsquo" => '’',
         "sbquo" => '‚',
@@ -70,12 +71,28 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "frac12" => '½',
         "frac14" => '¼',
         "frac34" => '¾',
+        "frac13" => '⅓',
+        "frac23" => '⅔',
+        "frac18" => '⅛',
+        "frac38" => '⅜',
+        "frac58" => '⅝',
+        "frac78" => '⅞',
+        "sup1" => '¹',
+        "sup2" => '²',
+        "sup3" => '³',
+        "micro" => 'µ',
+        "permil" => '‰',
+        "prime" => '′',
+        "Prime" => '″',
+        "oline" => '‾',
+        "frasl" => '⁄',
         "sect" => '§',
         "para" => '¶',
-        "euro" => '€',
-        "pound" => '£',
-        "yen" => '¥',
-        "cent" => '¢',
+        "euro" | "EURO" => '€',
+        "pound" | "POUND" => '£',
+        "yen" | "YEN" => '¥',
+        "cent" | "CENT" => '¢',
+        "curren" => '¤',
         "dagger" => '†',
         "Dagger" => '‡',
         "larr" => '←',
@@ -83,10 +100,53 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "uarr" => '↑',
         "darr" => '↓',
         "harr" => '↔',
+        "lArr" => '⇐',
+        "rArr" => '⇒',
+        "uArr" => '⇑',
+        "dArr" => '⇓',
+        "hArr" => '⇔',
+        "crarr" => '↵',
+        "forall" => '∀',
+        "part" => '∂',
+        "exist" => '∃',
+        "empty" => '∅',
+        "nabla" => '∇',
+        "isin" => '∈',
+        "notin" => '∉',
+        "ni" => '∋',
+        "prod" => '∏',
+        "sum" => '∑',
+        "radic" => '√',
+        "prop" => '∝',
+        "ang" => '∠',
+        "and" => '∧',
+        "or" => '∨',
+        "cap" => '∩',
+        "cup" => '∪',
+        "int" => '∫',
+        "there4" => '∴',
+        "sim" => '∼',
+        "cong" => '≅',
+        "asymp" | "approx" => '≈',
+        "ne" => '≠',
+        "equiv" => '≡',
         "le" => '≤',
         "ge" => '≥',
-        "ne" => '≠',
+        "sub" => '⊂',
+        "sup" => '⊃',
+        "nsub" => '⊄',
+        "sube" => '⊆',
+        "supe" => '⊇',
+        "oplus" => '⊕',
+        "otimes" => '⊗',
+        "perp" => '⊥',
+        "sdot" => '⋅',
         "infin" => '∞',
+        "loz" => '◊',
+        "spades" => '♠',
+        "clubs" => '♣',
+        "hearts" => '♥',
+        "diams" => '♦',
         "check" => '✓',
         "iexcl" => '¡',
         "iquest" => '¿',
@@ -100,13 +160,44 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "eacute" => 'é',
         "egrave" => 'è',
         "ecirc" => 'ê',
+        "euml" => 'ë',
         "Eacute" => 'É',
+        "Egrave" => 'È',
+        "Ecirc" => 'Ê',
+        "Euml" => 'Ë',
         "aacute" => 'á',
         "agrave" => 'à',
         "acirc" => 'â',
+        "atilde" => 'ã',
+        "Agrave" => 'À',
+        "Aacute" => 'Á',
+        "Acirc" => 'Â',
+        "Atilde" => 'Ã',
         "iacute" => 'í',
+        "igrave" => 'ì',
+        "icirc" => 'î',
+        "iuml" => 'ï',
+        "Iacute" => 'Í',
+        "Igrave" => 'Ì',
+        "Icirc" => 'Î',
+        "Iuml" => 'Ï',
         "oacute" => 'ó',
+        "ograve" => 'ò',
+        "ocirc" => 'ô',
+        "otilde" => 'õ',
+        "Oacute" => 'Ó',
+        "Ograve" => 'Ò',
+        "Ocirc" => 'Ô',
+        "Otilde" => 'Õ',
         "uacute" => 'ú',
+        "ugrave" => 'ù',
+        "ucirc" => 'û',
+        "Uacute" => 'Ú',
+        "Ugrave" => 'Ù',
+        "Ucirc" => 'Û',
+        "yacute" => 'ý',
+        "yuml" => 'ÿ',
+        "Yacute" => 'Ý',
         "ntilde" => 'ñ',
         "Ntilde" => 'Ñ',
         "ccedil" => 'ç',
@@ -121,11 +212,36 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "beta" => 'β',
         "gamma" => 'γ',
         "delta" => 'δ',
-        "pi" => 'π',
-        "sigma" => 'σ',
+        "epsilon" => 'ε',
+        "zeta" => 'ζ',
+        "eta" => 'η',
+        "theta" => 'θ',
+        "iota" => 'ι',
+        "kappa" => 'κ',
+        "lambda" => 'λ',
         "mu" => 'μ',
-        "Omega" => 'Ω',
+        "nu" => 'ν',
+        "xi" => 'ξ',
+        "pi" => 'π',
+        "rho" => 'ρ',
+        "sigma" => 'σ',
+        "tau" => 'τ',
+        "upsilon" => 'υ',
+        "phi" => 'φ',
+        "chi" => 'χ',
+        "psi" => 'ψ',
         "omega" => 'ω',
+        "Gamma" => 'Γ',
+        "Delta" => 'Δ',
+        "Theta" => 'Θ',
+        "Lambda" => 'Λ',
+        "Xi" => 'Ξ',
+        "Pi" => 'Π',
+        "Sigma" => 'Σ',
+        "Upsilon" => 'Υ',
+        "Phi" => 'Φ',
+        "Psi" => 'Ψ',
+        "Omega" => 'Ω',
         "zwj" => '\u{200D}',
         "zwnj" => '\u{200C}',
         _ => return None,
@@ -164,15 +280,27 @@ pub fn unescape(s: &str) -> String {
     out
 }
 
-/// Decode HTML bytes: BOM, then a `charset` in the first 2 KB, else UTF-8 with a Windows-1252
-/// fallback.
+fn sniff_charset(head: &str) -> Option<&str> {
+    let (i, n) = head.find("charset").map(|i| (i, 7)).or_else(|| head.find("encoding").map(|i| (i, 8)))?;
+    let after = head.get(i + n..)?.trim_start().strip_prefix('=')?;
+    let trimmed = after.trim_start().trim_start_matches(['"', '\'']);
+    let end = trimmed.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '>' | '/')).unwrap_or(trimmed.len());
+    let label = trimmed[..end].trim();
+    if label.is_empty() { None } else { Some(label) }
+}
+
+/// Decode HTML bytes: BOM, then a `charset` in the first 2 KB, else UTF-8 with a legacy fallback.
 pub fn decode(b: &[u8]) -> String {
     if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) || b.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return crate::txt::decode(b);
     }
     let head = String::from_utf8_lossy(b.get(..b.len().min(2048)).unwrap_or(b)).to_ascii_lowercase();
-    let latin = head.contains("charset=windows-1252") || head.contains("charset=iso-8859-1") || head.contains("charset=\"windows-1252\"");
-    if !latin && let Ok(s) = std::str::from_utf8(b) {
+    if let Some(label) = sniff_charset(&head)
+        && let Some(s) = crate::txt::decode_as(b, label)
+    {
+        return s;
+    }
+    if let Ok(s) = std::str::from_utf8(b) {
         return s.to_string();
     }
     crate::txt::decode(b)
@@ -209,6 +337,29 @@ impl Lexer<'_> {
             None => self.pos = self.s.len(),
         }
         found.map(|k| start + k).unwrap_or(self.s.len())
+    }
+
+    /// Skip past the next matching end tag `</tag...>` (ASCII case-insensitive), or to the end.
+    fn skip_past_end_tag(&mut self, tag: &str) {
+        let prefix = format!("</{tag}");
+        let p = prefix.as_bytes();
+        while self.pos < self.s.len() {
+            let hay = self.rest().as_bytes();
+            let found = hay.windows(p.len().max(1)).position(|w| w.eq_ignore_ascii_case(p));
+            let Some(k) = found else {
+                self.pos = self.s.len();
+                return;
+            };
+            let after_tag = k + p.len();
+            let next_byte = hay.get(after_tag);
+            if next_byte.is_none_or(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/') {
+                self.pos += after_tag;
+                self.skip_past(">");
+                return;
+            } else {
+                self.pos += k + 2;
+            }
+        }
     }
 
     fn next(&mut self) -> Option<Tok> {
@@ -347,6 +498,7 @@ struct El {
     align: Option<Align>,
     preserve: bool,
     page_break: bool,
+    page_break_after: bool,
     /// Li: a paragraph of this item was already emitted.
     used: bool,
 }
@@ -389,6 +541,8 @@ struct Builder<'r> {
     para: Option<Para>,
     /// The current paragraph continues a list item (joins the previous paragraph).
     para_cont: bool,
+    /// Pending page break from preceding elements with page-break-after or unconsumed break.
+    pending_page_break: bool,
     /// Whether the current paragraph's first / last text was read with preserved white space
     /// (CSS `white-space: pre…`): those edge spaces are kept when the paragraph ends.
     pre_lead: Option<bool>,
@@ -475,7 +629,8 @@ fn closes_p(n: &str) -> bool {
     )
 }
 
-fn css_len_pt(v: &str) -> Option<f32> {
+/// A CSS length (or font-size keyword) in points; `None` when it is not one.
+pub fn css_len_pt(v: &str) -> Option<f32> {
     let v = v.trim().to_ascii_lowercase();
     let num = |s: &str| s.trim().parse::<f32>().ok().filter(|x| x.is_finite());
     if let Some(x) = v.strip_suffix("pt") {
@@ -507,7 +662,7 @@ fn css_len_pt(v: &str) -> Option<f32> {
 }
 
 /// Apply a `style` attribute to formatting / block properties.
-fn apply_style(css: &str, f: &mut Fmt, align: &mut Option<Align>, preserve: &mut bool, page_break: &mut bool) {
+fn apply_style(css: &str, f: &mut Fmt, align: &mut Option<Align>, preserve: &mut bool, page_break: &mut bool, page_break_after: &mut bool) {
     for decl in css.split(';').take(64) {
         let Some((k, v)) = decl.split_once(':') else { continue };
         let k = k.trim().to_ascii_lowercase();
@@ -566,6 +721,7 @@ fn apply_style(css: &str, f: &mut Fmt, align: &mut Option<Align>, preserve: &mut
             }
             "white-space" => *preserve = lv.starts_with("pre"),
             "page-break-before" | "break-before" => *page_break = lv == "always" || lv == "page",
+            "page-break-after" | "break-after" => *page_break_after = lv == "always" || lv == "page",
             _ => {}
         }
     }
@@ -585,6 +741,7 @@ impl<'r> Builder<'r> {
             stack: Vec::new(),
             para: None,
             para_cont: false,
+            pending_page_break: false,
             pre_lead: None,
             pre_tail: false,
             meta: Meta::default(),
@@ -646,7 +803,7 @@ impl<'r> Builder<'r> {
                 }
             }
             if let (Some((o, _)), Some(li)) = (list_level, li_at) {
-                p.list = Some(ListInfo { ordered: o, level: lists.saturating_sub(1).min(8) as u8 });
+                p.list = Some(ListInfo { ordered: o, level: lists.saturating_sub(1).min(8) as u8, start: 1 });
                 self.para_cont = self.stack.get(li).is_some_and(|e| e.used);
                 if let Some(e) = self.stack.get_mut(li) {
                     e.used = true;
@@ -654,7 +811,8 @@ impl<'r> Builder<'r> {
             } else {
                 self.para_cont = false;
             }
-            p.page_break = self.stack.iter().rev().take_while(|e| e.kind != ElKind::Cell).any(|e| e.page_break);
+            let pb_before = self.stack.iter_mut().rev().take_while(|e| e.kind != ElKind::Cell).any(|e| std::mem::take(&mut e.page_break));
+            p.page_break = pb_before || std::mem::take(&mut self.pending_page_break);
             self.para = Some(p);
         }
         self.para.get_or_insert_with(Para::default)
@@ -804,6 +962,9 @@ impl<'r> Builder<'r> {
     }
 
     fn close(&mut self, e: &El) {
+        if e.page_break_after || e.page_break {
+            self.pending_page_break = true;
+        }
         if e.kind != ElKind::Inline {
             self.flush();
         }
@@ -953,6 +1114,11 @@ impl<'r> Builder<'r> {
                 self.container().push(FBlock::Para(Para::new(Kind::Rule)));
                 return;
             }
+            "wbr" => {
+                let f = self.fmt();
+                self.start_para().push_text("\u{200B}", &f);
+                return;
+            }
             "img" => {
                 let alt = attr(attrs, "alt").unwrap_or("").to_string();
                 let dim = |k: &str| attr(attrs, k).and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok()).map(|p| p * 0.75);
@@ -1002,6 +1168,7 @@ impl<'r> Builder<'r> {
         let mut align = None;
         let mut preserve = self.preserve();
         let mut page_break = false;
+        let mut page_break_after = false;
         match name {
             // A header cell is bold, as in browsers and Word, unless its own CSS says otherwise.
             "b" | "strong" | "th" => fmt.bold = true,
@@ -1024,8 +1191,18 @@ impl<'r> Builder<'r> {
                         fmt.font = Some(fam);
                     }
                 }
-                if let Some(sz) = attr(attrs, "size").and_then(|s| s.trim().parse::<i32>().ok()) {
-                    fmt.size = Some([7.5, 10.0, 12.0, 13.5, 18.0, 24.0, 36.0].get((sz.clamp(1, 7) - 1) as usize).copied().unwrap_or(12.0));
+                if let Some(sz) = attr(attrs, "size") {
+                    let s = sz.trim();
+                    let val = if let Some(rest) = s.strip_prefix('+') {
+                        rest.parse::<i32>().ok().map(|d| 3 + d)
+                    } else if let Some(rest) = s.strip_prefix('-') {
+                        rest.parse::<i32>().ok().map(|d| 3 - d)
+                    } else {
+                        s.parse::<i32>().ok()
+                    };
+                    if let Some(sz) = val {
+                        fmt.size = Some([7.5, 10.0, 12.0, 13.5, 18.0, 24.0, 36.0].get((sz.clamp(1, 7) - 1) as usize).copied().unwrap_or(12.0));
+                    }
                 }
             }
             "a" => {
@@ -1050,7 +1227,7 @@ impl<'r> Builder<'r> {
             align = Some(Align::Center);
         }
         if let Some(st) = attr(attrs, "style") {
-            apply_style(st, &mut fmt, &mut align, &mut preserve, &mut page_break);
+            apply_style(st, &mut fmt, &mut align, &mut preserve, &mut page_break, &mut page_break_after);
         }
         if kind == ElKind::Pre {
             preserve = true;
@@ -1094,7 +1271,7 @@ impl<'r> Builder<'r> {
             }
             _ => {}
         }
-        self.stack.push(El { name: name.to_string(), kind, fmt, align, preserve, page_break, used: false });
+        self.stack.push(El { name: name.to_string(), kind, fmt, align, preserve, page_break, page_break_after, used: false });
     }
 
     fn end(&mut self, name: &str) {
@@ -1162,8 +1339,7 @@ pub fn parse_with(s: &str, images: ImageLoader) -> Flow {
                     continue;
                 }
                 if matches!(name.as_str(), "script" | "style" | "noscript" | "template" | "textarea") && !self_close {
-                    lx.skip_past(&format!("</{name}"));
-                    lx.skip_past(">");
+                    lx.skip_past_end_tag(&name);
                     continue;
                 }
                 b.start(&name, &attrs, self_close);
@@ -1298,9 +1474,9 @@ fn align_css(a: Option<Align>) -> Option<&'static str> {
     }
 }
 
-fn text_html(t: &str) -> String {
+fn text_html(t: &str, at_start: bool) -> String {
     let mut o = String::new();
-    let mut prev_space = false;
+    let mut prev_space = at_start;
     for c in t.chars() {
         match c {
             '\n' => {
@@ -1371,8 +1547,9 @@ pub fn inlines_html(inlines: &[Inline]) -> String {
                     open.push_str(&format!("<span style=\"{}\">", css.join(";")));
                     close.push("</span>");
                 }
+                let at_start = o.is_empty();
                 o.push_str(&open);
-                o.push_str(&text_html(t));
+                o.push_str(&text_html(t, at_start));
                 for c in close.iter().rev() {
                     o.push_str(c);
                 }
@@ -1784,5 +1961,89 @@ mod tests {
     #[test]
     fn entities() {
         assert_eq!(unescape("a &lt;b&gt; &#65;&#x42; &bogus; &"), "a <b> AB &bogus; &");
+        assert_eq!(unescape("&minus; &COPY; &EURO; &TRADE; &frac12; &frac34;"), "− © € ™ ½ ¾");
+        assert_eq!(unescape("&theta; &lambda; &Delta; &nabla; &sum; &radic; &ne; &le; &ge; &hearts;"), "θ λ Δ ∇ ∑ √ ≠ ≤ ≥ ♥");
+    }
+
+    #[test]
+    fn wbr_word_break_opportunity() {
+        let f = parse("<p>Super<wbr>cali<wbr>fragilistic</p>");
+        let Some(FBlock::Para(p)) = f.blocks.first() else { panic!("expected para") };
+        assert_eq!(p.text(), "Super\u{200B}cali\u{200B}fragilistic");
+    }
+
+    #[test]
+    fn page_break_after_and_before() {
+        let f = parse("<p style='page-break-after: always'>First</p><p>Second</p>");
+        let paras: Vec<_> = f.blocks.iter().filter_map(|b| if let FBlock::Para(p) = b { Some(p) } else { None }).collect();
+        assert_eq!(paras.len(), 2);
+        assert!(!paras[0].page_break);
+        assert!(paras[1].page_break);
+
+        let f2 = parse("<div style='break-after: page'><p>Part 1</p></div><p>Part 2</p>");
+        let paras2: Vec<_> = f2.blocks.iter().filter_map(|b| if let FBlock::Para(p) = b { Some(p) } else { None }).collect();
+        assert_eq!(paras2.len(), 2);
+        assert!(!paras2[0].page_break);
+        assert!(paras2[1].page_break);
+    }
+
+    #[test]
+    fn font_size_relative_and_absolute() {
+        let f = parse("<font size=\"+1\">larger</font><font size=\"-1\">smaller</font><font size=\"5\">huge</font>");
+        let inls = match &f.blocks[0] {
+            FBlock::Para(p) => &p.inlines,
+            _ => panic!("expected para"),
+        };
+        let sizes: Vec<Option<f32>> = inls
+            .iter()
+            .map(|i| match i {
+                Inline::Text(_, fmt) => fmt.size,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sizes, vec![Some(13.5), Some(10.0), Some(18.0)]);
+    }
+
+    #[test]
+    fn decode_with_charset_declarations() {
+        let iso = b"<html><head><meta charset=\"iso-8859-1\"></head><body>\xE9l\xE8ve</body></html>";
+        assert!(decode(iso).contains("élève"));
+
+        let win = b"<html><head><meta charset='windows-1252'></head><body>\x80100</body></html>";
+        assert!(decode(win).contains("€100"));
+
+        let gbk = b"<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=gbk\"></head><body>\xC4\xE3\xBA\xC3</body></html>";
+        assert!(decode(gbk).contains("你好"));
+
+        let xml = b"<?xml version=\"1.0\" encoding=\"utf-8\"?><html><body>hello</body></html>";
+        assert!(decode(xml).contains("hello"));
+    }
+
+    #[test]
+    fn raw_text_elements_skip_only_matching_end_tag() {
+        let f = parse("<script>var a = \"</scripted>\"; var b = \"<b>malicious</b>\";</script><p>Hello</p>");
+        assert_eq!(f.blocks.len(), 1);
+        let p = match &f.blocks[0] {
+            FBlock::Para(p) => p,
+            b => panic!("expected para, got {b:?}"),
+        };
+        assert_eq!(p.text(), "Hello");
+
+        let f = parse("<style>/* </styles> */ p { color: red; }</style><p>World</p>");
+        assert_eq!(f.blocks.len(), 1);
+        let p = match &f.blocks[0] {
+            FBlock::Para(p) => p,
+            b => panic!("expected para, got {b:?}"),
+        };
+        assert_eq!(p.text(), "World");
+    }
+
+    #[test]
+    fn leading_space_survives_round_trip() {
+        let doc = Document::from_text(" lead");
+        let html = export(&doc);
+        assert!(!html.contains("<p> lead"), "{html}");
+        let back = import(&html);
+        assert_eq!(back.plain_text(Default::default()).replace('\u{a0}', " "), " lead");
     }
 }

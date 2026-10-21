@@ -1,4 +1,4 @@
-//! WordCraft PDF export, written with `krilla`.
+//! WordCraft PDF export through the shared `craft-pdf` writer and Krilla drawing primitives.
 //!
 //! [`export`] lays the document out and draws each page's display list
 //! ([`wordcraft_layout::display::page_display`]) into a PDF page:
@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
+use craft_pdf::write::{self, Metadata, WriteError, Writer, backend as krilla};
 use krilla::action::{Action, LinkAction};
 use krilla::annotation::{Annotation, LinkAnnotation, Target};
 use krilla::color::rgb;
@@ -33,7 +34,7 @@ use krilla::destination::XyzDestination;
 use krilla::error::KrillaError;
 use krilla::geom::{Path, PathBuilder, Point, Size, Transform};
 use krilla::image::Image;
-use krilla::metadata::{DateTime, Metadata};
+use krilla::metadata::DateTime;
 use krilla::num::NormalizedF32;
 use krilla::outline::{Outline, OutlineNode};
 use krilla::page::PageSettings;
@@ -47,6 +48,7 @@ use wordcraft_doc::{Document, Path as DocPath, Rgb, StoryRef};
 use wordcraft_fonts::FaceRef;
 use wordcraft_geom::Rect;
 use wordcraft_layout::display::{DisplayOptions, Draw, Stroke as LineStyle, page_display};
+use wordcraft_layout::para::{ClKind, LineEnd};
 use wordcraft_layout::wordart::ArtPaint;
 use wordcraft_layout::{DocLayout, LayoutCache, LayoutOptions, Page, Placed, layout};
 use wordcraft_metafile::{Picture, PlacedItem};
@@ -66,6 +68,12 @@ pub enum PdfError {
     Write(String),
 }
 
+impl From<WriteError> for PdfError {
+    fn from(error: WriteError) -> Self {
+        Self::Write(error.to_string())
+    }
+}
+
 /// Export options.
 #[derive(Clone, Debug)]
 pub struct PdfOptions {
@@ -83,11 +91,15 @@ pub struct PdfOptions {
     pub comments: bool,
     /// Compress content streams.
     pub compress: bool,
+    /// Print on this paper (width, height in points) instead of each page's own size: the page
+    /// is scaled to fit and centred, the paper turned to the page's orientation (Scale to paper
+    /// size, #2108). `None` keeps the document's page sizes.
+    pub paper: Option<(f32, f32)>,
 }
 
 impl Default for PdfOptions {
     fn default() -> Self {
-        PdfOptions { pages: None, title: None, author: None, tagged: true, include_markup: false, comments: false, compress: true }
+        PdfOptions { pages: None, title: None, author: None, tagged: true, include_markup: false, comments: false, compress: true, paper: None }
     }
 }
 
@@ -95,17 +107,23 @@ impl Default for PdfOptions {
 /// deletions are left out, as in Word's "No Markup" view. With `comments` each page carries the
 /// markup area with the comment balloons.
 pub fn export(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>, PdfError> {
-    let lo = LayoutOptions { hide_deleted: !opts.include_markup, comment_balloons: opts.comments, ..Default::default() };
-    let lay = layout(doc, &mut LayoutCache::new(), &lo);
-    export_layout(doc, &lay, opts)
+    write::guard(|| {
+        let lo = LayoutOptions { hide_deleted: !opts.include_markup, comment_balloons: opts.comments, ..Default::default() };
+        let lay = layout(doc, &mut LayoutCache::new(), &lo);
+        export_layout_inner(doc, &lay, opts)
+    })
 }
 
 /// Write an existing layout of `doc` as PDF.
 pub fn export_layout(doc: &Document, lay: &DocLayout, opts: &PdfOptions) -> Result<Vec<u8>, PdfError> {
+    write::guard(|| export_layout_inner(doc, lay, opts))
+}
+
+fn export_layout_inner(doc: &Document, lay: &DocLayout, opts: &PdfOptions) -> Result<Vec<u8>, PdfError> {
     let pages: Vec<usize> = match &opts.pages {
         Some(v) => {
             if let Some(bad) = v.iter().find(|p| **p >= lay.pages.len()) {
-                return Err(PdfError::BadPage(*bad + 1));
+                return Err(PdfError::BadPage(bad.saturating_add(1)));
             }
             v.clone()
         }
@@ -118,7 +136,7 @@ pub fn export_layout(doc: &Document, lay: &DocLayout, opts: &PdfOptions) -> Resu
     // the whole export. Draw that font's glyphs as outlines instead and write the document again.
     let mut outlined = HashSet::new();
     loop {
-        match write(doc, lay, opts, &pages, &outlined)? {
+        match write_attempt(doc, lay, opts, &pages, &outlined)? {
             Attempt::Done(bytes) => return Ok(bytes),
             Attempt::BadFont(id, msg) if outlined.len() < MAX_OUTLINED_FONTS && outlined.insert(id) => {
                 log::warn!("PDF: {msg}; its text is drawn as outlines");
@@ -138,10 +156,11 @@ enum Attempt {
     BadFont(u32, String),
 }
 
-fn write(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], outlined: &HashSet<u32>) -> Result<Attempt, PdfError> {
+fn write_attempt(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], outlined: &HashSet<u32>) -> Result<Attempt, PdfError> {
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, enable_tagging: opts.tagged, ..Default::default() };
-    let mut pdf = krilla::Document::new_with(settings);
-    pdf.set_metadata(metadata(doc, opts));
+    let language = doc.styles.default_chr.lang.clone().filter(|l| !l.is_empty() && l.is_ascii());
+    let mut writer = Writer::new_with_language(settings, metadata(doc, opts), language);
+    let pdf = writer.document_mut();
 
     let mut ex = Exporter {
         doc,
@@ -149,6 +168,7 @@ fn write(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], ou
         opts,
         out_index: pages.iter().enumerate().map(|(o, p)| (*p, o)).collect(),
         fonts: HashMap::new(),
+        font_error: None,
         outlined,
         cmaps: HashMap::new(),
         images: HashMap::new(),
@@ -162,20 +182,20 @@ fn write(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], ou
         pdf.set_outline(o);
     }
     for &pi in pages {
-        let Some(page) = lay.pages.get(pi) else { return Err(PdfError::BadPage(pi + 1)) };
-        let fit = Fit::of(page);
-        let (w, h) = (clamp_side(fit.paper_w), clamp_side(page.h));
-        let size = Size::from_wh(w, h).ok_or(PdfError::NoPages)?;
+        let Some(page) = lay.pages.get(pi) else { return Err(PdfError::BadPage(pi.saturating_add(1))) };
+        let fit = Fit::of(page, opts.paper);
+        let size = Size::from_wh(clamp_side(fit.paper_w), clamp_side(fit.paper_h)).ok_or(PdfError::NoPages)?;
         let mut kp = pdf.start_page_with(PageSettings::new(size));
         let mut s = kp.surface();
         ex.links.clear();
-        // A page with a markup area is scaled down to fit its paper with the area beside it.
-        let scaled = fit.k < 1.0;
+        // A page with a markup area is scaled down to fit its paper with the area beside it; a
+        // print on other paper is scaled to it and centred.
+        let scaled = fit.k != 1.0 || fit.dx != 0.0 || fit.dy != 0.0;
         if scaled {
-            s.push_transform(&Transform::from_row(fit.k, 0.0, 0.0, fit.k, 0.0, fit.dy));
+            s.push_transform(&Transform::from_row(fit.k, 0.0, 0.0, fit.k, fit.dx, fit.dy));
         }
-        // `w` is the document page's width: the page colour and watermark stay off the markup area.
-        ex.page(&mut s, page, w, h);
+        // `page_w` is the document page's width: the page colour and watermark stay off the markup area.
+        ex.page(&mut s, page, clamp_side(fit.page_w), clamp_side(page.h));
         if scaled {
             s.pop();
         }
@@ -188,42 +208,58 @@ fn write(doc: &Document, lay: &DocLayout, opts: &PdfOptions, pages: &[usize], ou
     if opts.tagged {
         pdf.set_tag_tree(ex.tag_tree());
     }
-    match pdf.finish() {
+    if let Some(error) = ex.font_error {
+        return Err(error);
+    }
+    match writer.finish() {
         Ok(bytes) => Ok(Attempt::Done(bytes)),
-        Err(KrillaError::Font(font, msg)) => {
-            let bad = ex.fonts.iter().find(|(_, (_, f))| f.as_ref() == Some(&font));
-            match bad {
-                Some((id, (face, _))) => Ok(Attempt::BadFont(*id, format!("font {} {} could not be embedded ({msg})", face.family, face.style))),
-                None => Err(PdfError::Write(format!("a font could not be embedded ({msg})"))),
+        Err(WriteError::Serialization(error)) => match *error {
+            KrillaError::Font(font, msg) => {
+                let bad = ex.fonts.iter().find(|(_, (_, f))| f.as_ref() == Some(&font));
+                match bad {
+                    Some((id, (face, _))) => Ok(Attempt::BadFont(*id, format!("font {} {} could not be embedded ({msg})", face.family, face.style))),
+                    None => Err(PdfError::Write(format!("a font could not be embedded ({msg})"))),
+                }
             }
-        }
-        Err(e) => Err(PdfError::Write(format!("{e:?}"))),
+            error => Err(PdfError::Write(format!("{error:?}"))),
+        },
+        Err(error) => Err(error.into()),
     }
 }
 
 /// How a layout page maps onto its PDF page: a page with a markup area (Print Markup) is scaled
-/// by `k` to its paper width and centred vertically (`dy`); any other page is drawn as it is.
+/// by `k` to its paper width and centred vertically (`dy`). With [`PdfOptions::paper`] that
+/// sheet is then scaled to the chosen paper and centred on it (`dx`, `dy`). Any other page is
+/// drawn as it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Fit {
+    /// The PDF page.
     paper_w: f32,
+    paper_h: f32,
+    /// The document page's width in layout points (without the markup area).
+    page_w: f32,
     k: f32,
+    dx: f32,
     dy: f32,
 }
 
 impl Fit {
-    fn of(page: &Page) -> Fit {
+    fn of(page: &Page, paper: Option<(f32, f32)>) -> Fit {
         let paper_w = page.w - page.markup;
-        if page.markup > 0.0 && ok(page.markup) && ok(page.w) && paper_w > 1.0 {
+        let own = if page.markup > 0.0 && ok(page.markup) && ok(page.w) && paper_w > 1.0 {
             let k = paper_w / page.w;
-            Fit { paper_w, k, dy: page.h * (1.0 - k) / 2.0 }
+            Fit { paper_w, paper_h: page.h, page_w: paper_w, k, dx: 0.0, dy: page.h * (1.0 - k) / 2.0 }
         } else {
-            Fit { paper_w: page.w, k: 1.0, dy: 0.0 }
-        }
+            Fit { paper_w: page.w, paper_h: page.h, page_w: page.w, k: 1.0, dx: 0.0, dy: 0.0 }
+        };
+        let Some((w, h)) = paper else { return own };
+        let f = wordcraft_geom::fit_to_paper(own.paper_w, own.paper_h, w, h);
+        Fit { paper_w: f.paper_w, paper_h: f.paper_h, page_w: own.page_w, k: own.k * f.k, dx: f.dx, dy: own.dy * f.k + f.dy }
     }
 
     /// A layout point on the PDF page.
     fn point(self, x: f32, y: f32) -> (f32, f32) {
-        (x * self.k, y * self.k + self.dy)
+        (x * self.k + self.dx, y * self.k + self.dy)
     }
 }
 
@@ -363,32 +399,28 @@ fn clamp_side(v: f32) -> f32 {
 
 fn metadata(doc: &Document, opts: &PdfOptions) -> Metadata {
     let c = &doc.core;
-    let mut m = Metadata::new().creator("WordCraft".into()).producer("WordCraft".into());
+    let mut m = Metadata { creator: "WordCraft".into(), producer: "WordCraft".into(), ..Default::default() };
     let title = opts.title.clone().unwrap_or_else(|| c.title.clone());
     if !title.trim().is_empty() {
-        m = m.title(title);
+        m.title = Some(title);
     }
     let author = opts.author.clone().unwrap_or_else(|| c.creator.clone());
     if !author.trim().is_empty() {
-        m = m.authors(vec![author]);
+        m.authors = vec![author];
     }
     if !c.subject.trim().is_empty() {
-        m = m.description(c.subject.clone());
+        m.description = Some(c.subject.clone());
     } else if !c.description.trim().is_empty() {
-        m = m.description(c.description.clone());
+        m.description = Some(c.description.clone());
     }
     let kw: Vec<String> = c.keywords.split([',', ';']).map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
     if !kw.is_empty() {
-        m = m.keywords(kw);
-    }
-    if let Some(lang) = doc.styles.default_chr.lang.clone().filter(|l| !l.is_empty() && l.is_ascii()) {
-        m = m.language(lang);
+        m.keywords = kw;
     }
     let date = parse_iso(&c.created).or_else(|| now_unix().map(civil));
     if let Some((y, mo, d, h, mi, s)) = date {
-        m = m.creation_date(
-            DateTime::new(y.clamp(0, 9999) as u16).month(mo).day(d).hour(h).minute(mi).second(s).utc_offset_hour(0).utc_offset_minute(0),
-        );
+        m.created =
+            Some(DateTime::new(y.clamp(0, 9999) as u16).month(mo).day(d).hour(h).minute(mi).second(s).utc_offset_hour(0).utc_offset_minute(0));
     }
     m
 }
@@ -397,6 +429,7 @@ type Civil = (i64, u8, u8, u8, u8, u8);
 
 /// `YYYY-MM-DD[THH:MM[:SS]]…` → civil time.
 fn parse_iso(s: &str) -> Option<Civil> {
+    let s = s.trim();
     let n = |a: usize, b: usize| s.get(a..b).and_then(|x| x.parse::<i64>().ok());
     let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
@@ -629,6 +662,7 @@ struct Exporter<'a> {
     out_index: HashMap<usize, usize>,
     /// Embedded fonts by face id (`None`: krilla can't read it).
     fonts: HashMap<u32, (FaceRef, Option<Font>)>,
+    font_error: Option<PdfError>,
     /// Faces whose glyphs are drawn as outlines because krilla can't subset them.
     outlined: &'a HashSet<u32>,
     cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
@@ -661,15 +695,21 @@ impl Exporter<'_> {
         if self.outlined.contains(&face.id()) {
             return None;
         }
+        let font_error = &mut self.font_error;
         self.fonts
             .entry(face.id())
             .or_insert_with(|| {
-                let data: krilla::Data = face.data().to_vec().into();
-                let font = if face.is_variable() {
-                    let coords: Vec<(krilla::text::Tag, f32)> = face.coords.iter().map(|(t, v)| (krilla::text::Tag::new(t), *v)).collect();
-                    Font::new_variable(data, face.index(), &coords)
-                } else {
-                    Font::new(data, face.index())
+                let variations = face.is_variable().then_some(face.coords.as_slice());
+                let font = match write::font(face.data(), face.index(), variations) {
+                    Ok(font) => Some(font),
+                    // Keep WordCraft's existing policy: unreadable faces are skipped.
+                    Err(WriteError::InvalidFont) => None,
+                    Err(error) => {
+                        // Allocation, validation or backend failures must fail the export,
+                        // rather than return a PDF with missing text.
+                        font_error.get_or_insert_with(|| error.into());
+                        None
+                    }
                 };
                 (*face, font)
             })
@@ -918,7 +958,7 @@ impl Exporter<'_> {
             }
             Draw::Line { x0, y0, x1, y1, width, color, stroke, alpha, .. } => self.line(s, (*x0, *y0, *x1, *y1), *width, *color, *stroke, *alpha),
             Draw::Image { rect, media, crop, alpha, .. } => self.picture(s, rect, media, crop, *alpha),
-            Draw::Path { segs, fill: f, stroke, stroke_width } => {
+            Draw::Path { segs, fill: f, stroke, stroke_width, dash } => {
                 let mut pb = PathBuilder::new();
                 append_path(&mut pb, &wordcraft_layout::display::seg_path(segs));
                 let Some(p) = pb.finish() else { return };
@@ -927,6 +967,7 @@ impl Exporter<'_> {
                     paint: rgb::Color::new(c.0, c.1, c.2).into(),
                     // Width 0 (or none) is a hairline.
                     width: if stroke_width.is_finite() && *stroke_width > 0.0 { stroke_width.clamp(0.25, 200.0) } else { 0.75 },
+                    dash: (!dash.is_empty()).then(|| StrokeDash { array: dash.clone(), offset: 0.0 }),
                     ..Default::default()
                 }));
                 if f.is_some() || stroke.is_some() {
@@ -965,7 +1006,7 @@ impl Exporter<'_> {
                 s.draw_path(&p);
                 s.set_stroke(None);
             }
-            Draw::Shape { rect, kind, fill: f, stroke, stroke_width, effects, corner } => {
+            Draw::Shape { rect, kind, fill: f, stroke, stroke_width, effects, corner, dash } => {
                 let Some(p) = shape_path(*kind, rect, *corner) else { return };
                 let can_fill = *kind != ShapeKind::Line;
                 let fx = effects.sanitized();
@@ -989,6 +1030,7 @@ impl Exporter<'_> {
                 s.set_stroke(stroke.map(|c| Stroke {
                     paint: rgb::Color::new(c.0, c.1, c.2).into(),
                     width: if stroke_width.is_finite() { stroke_width.clamp(0.25, 200.0) } else { 0.75 },
+                    dash: (!dash.is_empty()).then(|| StrokeDash { array: dash.clone(), offset: 0.0 }),
                     ..Default::default()
                 }));
                 if f.is_some() && can_fill || stroke.is_some() {
@@ -997,7 +1039,7 @@ impl Exporter<'_> {
                 s.set_fill(None);
                 s.set_stroke(None);
             }
-            Draw::Art { path, fx, color, alpha } => {
+            Draw::Art { path, fx, color, alpha, .. } => {
                 for l in wordcraft_layout::wordart::art_layers(path, fx, *color, *alpha) {
                     let mut pb = PathBuilder::new();
                     append_path(&mut pb, &l.path);
@@ -1127,22 +1169,33 @@ impl Exporter<'_> {
                 seg(s, -nx, -ny);
             }
             LineStyle::Wave => {
-                let (a, b) = (x0.min(x1), x0.max(x1));
                 let amp = (w * 1.2).max(0.8);
                 let step = amp * 2.0;
-                let mut pb = PathBuilder::new();
-                pb.move_to(a, y0);
-                let mut x = a;
-                let mut up = true;
-                while x < b && x - a < 20_000.0 {
-                    let nx = (x + step).min(b);
-                    pb.quad_to((x + nx) / 2.0, if up { y0 - amp } else { y0 + amp }, nx, y0);
-                    x = nx;
-                    up = !up;
-                }
-                s.set_stroke(Some(stroke(w * 0.8, None, LineCap::Round)));
-                if let Some(p) = pb.finish() {
-                    s.draw_path(&p);
+                let (dx, dy) = (x1 - x0, y1 - y0);
+                let len = (dx * dx + dy * dy).sqrt();
+                if len >= 1e-3 {
+                    let (ux, uy) = (dx / len, dy / len);
+                    let (nx, ny) = (-uy, ux);
+                    let mut pb = PathBuilder::new();
+                    pb.move_to(x0, y0);
+                    let mut t = 0.0;
+                    let mut up = true;
+                    while t < len && t < 20_000.0 {
+                        let nt = (t + step).min(len);
+                        let mid_t = (t + nt) / 2.0;
+                        let sign = if up { -1.0 } else { 1.0 };
+                        let cx = x0 + ux * mid_t + nx * amp * sign;
+                        let cy = y0 + uy * mid_t + ny * amp * sign;
+                        let ex = x0 + ux * nt;
+                        let ey = y0 + uy * nt;
+                        pb.quad_to(cx, cy, ex, ey);
+                        t = nt;
+                        up = !up;
+                    }
+                    s.set_stroke(Some(stroke(w * 0.8, None, LineCap::Round)));
+                    if let Some(p) = pb.finish() {
+                        s.draw_path(&p);
+                    }
                 }
             }
         }
@@ -1392,7 +1445,7 @@ impl Exporter<'_> {
             }
             m
         });
-        let pos = marks.get(name)?.clone();
+        let pos = marks.get(name).or_else(|| marks.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v))?.clone();
         if let Some(c) = self.lay.caret(&pos)
             && let Some(out) = self.out_index.get(&c.page)
         {
@@ -1409,7 +1462,8 @@ impl Exporter<'_> {
                     _ => None,
                 })
                 .unwrap_or(c.x);
-            return Some((*out, x, c.top));
+            let (x, y) = self.lay.pages.get(c.page).map(|p| Fit::of(p, self.opts.paper).point(x, c.top)).unwrap_or((x, c.top));
+            return Some((*out, x, y));
         }
         self.locate(pos.story, &pos.path)
     }
@@ -1421,7 +1475,7 @@ impl Exporter<'_> {
             let Some(out) = self.out_index.get(pi) else { continue };
             let Some(page) = self.lay.pages.get(*pi) else { continue };
             let (x, y) = match page.items.get(*ii) {
-                Some(Placed::Lines { x, y, .. }) => Fit::of(page).point(*x, *y),
+                Some(Placed::Lines { x, y, .. }) => Fit::of(page, self.opts.paper).point(*x, *y),
                 _ => (0.0, 0.0),
             };
             return Some((*out, x, y));
@@ -1457,14 +1511,31 @@ impl Exporter<'_> {
         for (out, pi) in pages.iter().enumerate() {
             let Some(page) = self.lay.pages.get(*pi) else { continue };
             for it in &page.items {
-                let Placed::Lines { story: StoryRef::Body, path, para, l0: 0, x, y, .. } = it else { continue };
+                let Placed::Lines { story: StoryRef::Body, path, para, l0, l1, x, y, .. } = it else { continue };
                 let Some(p) = self.doc.para(StoryRef::Body, path) else { continue };
                 let Some(level) = self.doc.styles.resolve_para(&p.props).outline_level else { continue };
+                // A leading page break can be placed on the previous page without the heading.
+                let first = para
+                    .lines
+                    .iter()
+                    .take_while(|line| {
+                        line.end == LineEnd::PageBreak
+                            && para
+                                .clusters
+                                .get(line.c0..line.c1)
+                                .is_some_and(|cs| cs.iter().all(|c| matches!(c.kind, ClKind::PageBreak | ClKind::Marker)))
+                    })
+                    .count();
+                if !(*l0..*l1).contains(&first) {
+                    continue;
+                }
+                let Some(line) = para.lines.get(first) else { continue };
+                let Some(piece) = para.lines.get(*l0) else { continue };
                 let title: String = self.title_text(p, para).split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
                 if title.is_empty() {
                     continue;
                 }
-                let (x, y) = Fit::of(page).point(*x, *y);
+                let (x, y) = Fit::of(page, self.opts.paper).point(*x, *y + line.top - piece.top);
                 flat.push((level.min(8), title, out, x, y));
             }
         }
@@ -1654,10 +1725,18 @@ fn path_from(b: &kurbo::BezPath) -> Option<Path> {
 /// Decode a picture for embedding (validated with the `image` crate first, so a broken file
 /// can't fail the whole export).
 fn load_image(data: &Arc<Vec<u8>>) -> Option<Image> {
+    load_image_within(data, wordcraft_geom::MAX_DECODED_BYTES)
+}
+
+/// [`load_image`] with an explicit RGBA byte budget (a small one in tests).
+fn load_image_within(data: &Arc<Vec<u8>>, budget: u64) -> Option<Image> {
     let fmt = image::guess_format(data).ok()?;
-    // The side check below used to run only after a full decode; applying it as a decode limit
-    // rejects a small file that declares a huge image at header time instead. The default
-    // allocation cap (512 MB, what `load_from_memory_with_format` applied) stays in force.
+    // Header-only size check before anything is allocated (decode buffer + RGBA conversion are
+    // charged); the side limits and the default 512 MB allocation cap stay as a second guard.
+    let (hw, hh) = image::ImageReader::new(std::io::Cursor::new(data.as_slice())).with_guessed_format().ok()?.into_dimensions().ok()?;
+    if !wordcraft_geom::decode_fits(hw, hh, budget) {
+        return None;
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data.as_slice())).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_SIDE);
@@ -1671,7 +1750,7 @@ fn load_image(data: &Arc<Vec<u8>>) -> Option<Image> {
     if fmt == image::ImageFormat::Jpeg && matches!(dec.color(), image::ColorType::L8 | image::ColorType::Rgb8) {
         return Image::from_jpeg(data.clone().into(), true).ok();
     }
-    Some(Image::from_rgba8(dec.to_rgba8().into_raw(), w, h))
+    Some(Image::from_rgba8(dec.into_rgba8().into_raw(), w, h))
 }
 
 #[cfg(test)]

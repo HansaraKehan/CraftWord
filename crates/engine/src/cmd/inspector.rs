@@ -46,11 +46,11 @@ fn para_props(s: &Session) -> ParaProps {
 fn char_props(s: &Session) -> CharProps {
     let (a, b) = s.sel.ordered();
     if a == b {
-        return s.typing_props();
+        return s.caret_props();
     }
     match s.doc.para_at(&a) {
         Some(p) if a.off < p.len() => p.props_of_char(a.off).clone(),
-        _ => s.typing_props(),
+        _ => s.caret_props(),
     }
 }
 

@@ -43,10 +43,11 @@ pub fn dictionary() -> Arc<AffixDict> {
 
 fn load_installed() -> AffixDict {
     let Some((aff, dic)) = crate::hunspell::find(NAMES) else {
+        crate::hunspell::clear_load_error(NAMES[0]);
         log::info!("Portuguese spelling: no Hunspell pt_BR dictionary installed");
         return AffixDict::default();
     };
-    crate::hunspell::load(&aff, &dic).unwrap_or_else(|e| {
+    crate::hunspell::note_load(NAMES[0], &dic, crate::hunspell::load(&aff, &dic)).unwrap_or_else(|e| {
         log::warn!("Portuguese spelling: {e}");
         AffixDict::default()
     })
@@ -205,5 +206,15 @@ mod tests {
         assert!(!is_correct("zxqportuguespalavra"));
         crate::add_word("Zxqportuguespalavra");
         assert!(is_correct("zxqportuguespalavra"));
+    }
+
+    #[test]
+    fn user_dictionary_accepts_a_hyphenated_word_whole() {
+        test_dict::install();
+        let text = "Ele disse que está na Unigranrio-RJ.";
+        assert_eq!(crate::check_spelling_in(text, crate::ProofLang::Pt).len(), 1, "Unigranrio isn't in the dictionary");
+        // Added as the context menu adds it, hyphen and all (#2082).
+        crate::add_word("Unigranrio-RJ");
+        assert!(crate::check_spelling_in(text, crate::ProofLang::Pt).is_empty());
     }
 }

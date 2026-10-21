@@ -142,12 +142,27 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The built-in name of the placeholder style. Its id is localized: German Word writes
+/// `Platzhaltertext`, English `PlaceholderText`.
+const PLACEHOLDER_STYLE_NAME: &str = "Placeholder Text";
+
+/// The id of the document's placeholder style: the one named "Placeholder Text", else the
+/// English id.
+fn placeholder_style_id(doc: &wordcraft_doc::Document) -> String {
+    doc.styles
+        .styles
+        .iter()
+        .find(|st| st.kind == StyleKind::Character && st.name.eq_ignore_ascii_case(PLACEHOLDER_STYLE_NAME))
+        .map(|st| st.id.clone())
+        .unwrap_or_else(|| PLACEHOLDER_STYLE.into())
+}
+
 /// The placeholder style, added to the document when it hasn't one.
 fn ensure_placeholder_style(s: &mut Session) {
-    if s.doc.styles.get(PLACEHOLDER_STYLE).is_none() {
+    if s.doc.styles.get(&placeholder_style_id(&s.doc)).is_none() {
         s.doc.styles.styles.push(Style {
             id: PLACEHOLDER_STYLE.into(),
-            name: "Placeholder Text".into(),
+            name: PLACEHOLDER_STYLE_NAME.into(),
             kind: StyleKind::Character,
             based_on: Some("DefaultParagraphFont".into()),
             chr: CharProps { color: Some(TextColor::Rgb(Rgb(0x66, 0x66, 0x66))), ..Default::default() },
@@ -161,13 +176,13 @@ fn ensure_placeholder_style(s: &mut Session) {
 /// Formatting for placeholder text based on `base`.
 fn placeholder_props(s: &mut Session, base: &CharProps) -> CharProps {
     ensure_placeholder_style(s);
-    CharProps { style: Some(PLACEHOLDER_STYLE.into()), link: None, ..base.clone() }
+    CharProps { style: Some(placeholder_style_id(&s.doc)), link: None, ..base.clone() }
 }
 
-/// `base` without the placeholder style (for real content).
-fn content_props(base: &CharProps) -> CharProps {
+/// `base` without the placeholder style (for real content), whatever its localized id.
+fn content_props(doc: &wordcraft_doc::Document, base: &CharProps) -> CharProps {
     let mut p = base.clone();
-    if p.style.as_deref() == Some(PLACEHOLDER_STYLE) {
+    if p.style.as_deref().is_some_and(|id| id == PLACEHOLDER_STYLE || id == placeholder_style_id(doc)) {
         p.style = None;
     }
     p
@@ -248,7 +263,7 @@ fn content_base(s: &Session, r: &ControlRange) -> CharProps {
         .para_at(&a)
         .map(|p| if r.is_empty() { p.props_of_char(r.start.off).clone() } else { p.props_of_char(a.off).clone() })
         .unwrap_or_default();
-    content_props(&props)
+    content_props(&s.doc, &props)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -299,7 +314,14 @@ pub fn prepare_edit(s: &mut Session) -> Result<Option<CharProps>, CmdError> {
     if !r.control.showing_placeholder || !r.contains(&b) {
         return Ok(None);
     }
-    let props = content_base(s, &r);
+    // Text typed in place of the placeholder takes the control's own run properties (Word, and
+    // ECMA-376 §17.5.2.27), else the content's formatting without the placeholder style. The
+    // showing placeholder's own character style is that style, whatever a producer called it
+    // (Word localizes only the id; another program may localize the name too).
+    let props = match &r.control.run_props {
+        Some(rp) => content_props(&s.doc, rp),
+        None => CharProps { style: None, ..content_base(s, &r) },
+    };
     s.sel = Selection { anchor: r.content_start(), focus: r.end.clone() };
     if let Some(c) = s.doc.control_mut(&r.start) {
         c.showing_placeholder = false;
@@ -423,7 +445,7 @@ fn insert(s: &mut Session, v: &Value, kind: ControlKind) -> CmdResult {
     // An inline control: around the selection (text and pictures), else at the caret with its
     // placeholder or value.
     let wraps = a != b && a.path == b.path && matches!(ctl.kind, ControlKind::RichText | ControlKind::Text { .. } | ControlKind::Picture);
-    let base = s.doc.para_at(&a).map(|p| content_props(&p.props_of_char(a.off).clone())).unwrap_or_default();
+    let base = s.doc.para_at(&a).map(|p| content_props(&s.doc, &p.props_of_char(a.off).clone())).unwrap_or_default();
     if wraps {
         s.doc.insert_object(&b, InlineObject::ControlEnd, &base)?;
         let start = a.clone();
@@ -464,7 +486,7 @@ fn insert_block(s: &mut Session, mut ctl: ContentControl, a: &Pos, b: &Pos) -> C
     let last = if b.path.parent() == a.path.parent() { b.path.clone() } else { a.path.clone() };
     ctl.block = true;
     let empty = a.path == last && s.doc.para(story, &a.path).is_some_and(|p| p.is_empty());
-    let base = s.doc.para(story, &a.path).map(|p| content_props(&p.props_of_char(0).clone())).unwrap_or_default();
+    let base = s.doc.para(story, &a.path).map(|p| content_props(&s.doc, &p.props_of_char(0).clone())).unwrap_or_default();
     let item = matches!(ctl.kind, ControlKind::RepeatingSection { .. }).then(|| {
         let mut i = ContentControl::new(ControlKind::RepeatingSectionItem);
         i.block = true;
@@ -746,6 +768,55 @@ mod editing_tests {
     }
     fn info(s: &mut Session) -> serde_json::Value {
         run(s, "developer.control", json!({}))
+    }
+
+    /// A form from German Word names its placeholder style `Platzhaltertext` ("Placeholder Text"),
+    /// and each control's `w:rPr` gives the style entered text takes (`Eingabe`, bold black).
+    /// Text typed over the placeholder takes the control's run properties, as in Word (17 of 17
+    /// values filled in Word did); without them it drops the placeholder style whatever its id.
+    /// WordCraft kept the German placeholder style, so entries stayed grey.
+    #[test]
+    fn typing_over_a_localized_placeholder_takes_the_controls_formatting() {
+        use wordcraft_doc::props::{CharProps, Rgb, TextColor};
+        use wordcraft_doc::styles::{Style, StyleKind};
+        let style =
+            |id: &str, name: &str, chr: CharProps| Style { id: id.into(), name: name.into(), kind: StyleKind::Character, chr, ..Default::default() };
+        let typed_style = |run_props: Option<CharProps>| {
+            let mut s = Session::new(wordcraft_doc::Document::new());
+            let grey = CharProps { color: Some(TextColor::Rgb(Rgb(0x80, 0x80, 0x80))), ..Default::default() };
+            s.doc.styles.styles.push(style("Platzhaltertext", "Placeholder Text", grey));
+            s.doc.styles.styles.push(style("Eingabe", "Eingabe", CharProps { bold: Some(true), ..Default::default() }));
+            run(&mut s, "text.insert", json!({"text": "Name: "}));
+            run(&mut s, "developer.plainText", json!({"tag": "name"}));
+            let start = s.doc.control_at(&s.sel.focus).unwrap().start;
+            s.doc.control_mut(&start).unwrap().run_props = run_props;
+            // The placeholder uses the document's own placeholder style; none is added.
+            let r = s.doc.control_at(&s.sel.focus).unwrap();
+            let shown = s.doc.para_at(&r.content_start()).unwrap().props_of_char(r.content_start().off).style.clone();
+            assert_eq!(shown.as_deref(), Some("Platzhaltertext"));
+            assert_eq!(s.doc.styles.styles.iter().filter(|st| st.name == "Placeholder Text").count(), 1);
+            run(&mut s, "caret.right", json!({}));
+            run(&mut s, "text.insert", json!({"text": "Ada"}));
+            let r = s.doc.control_at(&s.sel.focus).unwrap();
+            s.doc.para_at(&r.content_start()).unwrap().props_of_char(r.content_start().off).style.clone()
+        };
+        let eingabe = CharProps { style: Some("Eingabe".into()), ..Default::default() };
+        assert_eq!(typed_style(Some(eingabe)).as_deref(), Some("Eingabe"), "the control's run properties");
+        assert_eq!(typed_style(None), None, "no placeholder style left");
+        // A producer that localizes the style's name as well: the showing placeholder's own
+        // style goes all the same.
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        let grey = CharProps { color: Some(TextColor::Rgb(Rgb(0x80, 0x80, 0x80))), ..Default::default() };
+        s.doc.styles.styles.push(style("TexteEspaceReserve", "Texte de l'espace réservé", grey));
+        run(&mut s, "text.insert", json!({"text": "Nom : "}));
+        run(&mut s, "developer.plainText", json!({"tag": "nom"}));
+        let r = s.doc.control_at(&s.sel.focus).unwrap();
+        s.doc.format_range(&r.content_start(), &r.end, &|c| c.style = Some("TexteEspaceReserve".into())).unwrap();
+        run(&mut s, "caret.right", json!({}));
+        run(&mut s, "text.insert", json!({"text": "Ada"}));
+        let r = s.doc.control_at(&s.sel.focus).unwrap();
+        let typed = s.doc.para_at(&r.content_start()).unwrap().props_of_char(r.content_start().off).style.clone();
+        assert_eq!(typed, None, "a placeholder style localized in id and name");
     }
 
     #[test]

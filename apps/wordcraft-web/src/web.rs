@@ -65,11 +65,21 @@ pub fn start() {
                     // Pasted pictures wait apart from dropped files: the app inserts one only when the page is the edit target (#1349).
                     app.services.pasted = Some(pasted);
                     app.autosave = false;
+                    // Preferences from an earlier visit (#2132), as the desktop app reads `ui.json`.
+                    let stored = stored_prefs();
+                    crate::prefs::restore(&mut app, stored.as_deref());
+                    // A region chosen in File › Options replaces the browser's for the first blank
+                    // document too (#838).
+                    if !sample && app.session.prefs.region.is_some() {
+                        let doc = app.session.blank_document();
+                        app.session.set_document(doc);
+                    }
+                    let prefs = crate::prefs::PrefsSync::new(stored);
                     // No document to show: start on File › Home, as the desktop app does (#766).
                     if !sample {
                         app.start_screen();
                     }
-                    Ok(Box::new(WebShell { app, inbox, messages }))
+                    Ok(Box::new(WebShell { app, inbox, messages, prefs }))
                 }),
             )
             .await;
@@ -92,6 +102,16 @@ struct WebShell {
     app: WordApp,
     inbox: Inbox,
     messages: Rc<RefCell<Vec<String>>>,
+    prefs: crate::prefs::PrefsSync,
+}
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+/// The preferences stored on an earlier visit, if the browser allows storage.
+fn stored_prefs() -> Option<String> {
+    local_storage()?.get_item(crate::prefs::KEY).ok()?
 }
 
 impl eframe::App for WebShell {
@@ -116,6 +136,17 @@ impl eframe::App for WebShell {
             self.app.status(msg);
         }
         self.app.logic(ctx);
+        // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
+        if let Some(json) = self.prefs.changed(&self.app) {
+            match local_storage() {
+                Some(store) => {
+                    if let Err(e) = store.set_item(crate::prefs::KEY, &json) {
+                        log::warn!("preferences: cannot save: {e:?}");
+                    }
+                }
+                None => log::warn!("preferences: browser storage is unavailable"),
+            }
+        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -193,13 +224,23 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
             } else {
                 rfd::AsyncFileDialog::new().add_filter("Documents", DOC_EXTS)
             };
+            let many = purpose == "font";
             wasm_bindgen_futures::spawn_local(async move {
-                let Some(file) = dialog.pick_file().await else {
-                    return;
-                };
-                let bytes = file.read().await;
-                inbox.lock().unwrap_or_else(|e| e.into_inner()).push((file.file_name(), bytes));
-                ctx.request_repaint();
+                // Add Font takes every selected file (#1789); the others one.
+                let files = if many { dialog.pick_files().await.unwrap_or_default() } else { dialog.pick_file().await.into_iter().collect() };
+                for file in files.into_iter().take(MAX_PICKED_FILES) {
+                    let mut bytes = file.read().await;
+                    let mut pending = inbox.lock().unwrap_or_else(|e| e.into_inner());
+                    // Fonts waiting for the app to drain them stay under a byte cap. A file
+                    // over it is queued empty, so Add Font reports that file on its own.
+                    let held: usize = pending.iter().map(|(_, b)| b.len()).fold(0, usize::saturating_add);
+                    if many && held.saturating_add(bytes.len()) > MAX_PENDING_PICKED_BYTES {
+                        bytes = Vec::new();
+                    }
+                    pending.push((file.file_name(), bytes));
+                    drop(pending);
+                    ctx.request_repaint();
+                }
             });
         })),
         // Exports ask for a name; the browser decides where the download goes.
@@ -219,6 +260,10 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
     }
 }
 
+/// Most files one multi-select pick (Add Font) reads.
+const MAX_PICKED_FILES: usize = 2000;
+/// Most bytes of picked fonts held in the inbox before the app drains them.
+const MAX_PENDING_PICKED_BYTES: usize = 256 << 20;
 /// Most local fonts one Load System Installed Fonts installs (a designer's machine has thousands).
 const MAX_SYSTEM_FONTS: usize = 500;
 /// Most font bytes one Load System Installed Fonts reads into memory (wasm memory is small).
@@ -408,6 +453,7 @@ fn trigger_save_file_picker(
     let prom: js_sys::Promise = prom_val.dyn_into().map_err(|_| "not a promise".to_string())?;
 
     let bytes_vec = bytes.to_vec();
+    let window = window.clone();
     let saves = saves.clone();
     let ctx = ctx.clone();
     let name = name.to_string();
@@ -429,13 +475,10 @@ fn trigger_save_file_picker(
             Err(e) => {
                 let err_name =
                     js_sys::Reflect::get(&e, &wasm_bindgen::JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_default();
-                if err_name == "AbortError" {
-                    log::debug!("save picker cancelled");
-                    SaveOutcome::Cancelled
-                } else {
-                    log::error!("showSaveFilePicker error: {e:?}");
-                    SaveOutcome::Failed(format!("{e:?}"))
-                }
+                // A browser can expose the picker but reject its promise (for example in
+                // a cross-origin iframe). Use the same download path as an absent API;
+                // cancelling a picker must never start an unwanted download (#1246).
+                crate::save_fallback::picker_rejected(&err_name, || trigger_anchor_download(&window, &name, &bytes_vec))
             }
         };
         saves.finish(ticket, outcome);

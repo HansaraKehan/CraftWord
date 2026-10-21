@@ -274,6 +274,7 @@
 	Use the Insert key to switch overtype on and off	Тастер Insert укључује и искључује преписивање
 	Whole document	Цео документ
 	This section	Овај одељак
+	Selected text	Изабрани текст
 	Fill	Испуна
 	Setting:	Врста:
 	3-D	3D
@@ -619,6 +620,10 @@
 	Modify…	Измени…
 	Move or Resize	Помери или промени величину
 	Multilevel List	Вишенивоска листа
+	Multilevel List Library	Библиотека вишенивоских листа
+	Article I.	Члан I.
+	Chapter 1	Поглавље 1
+	Section 1.01	Одељак 1.01
 	Multiple Pages	Више страна
 	Name (A–Z)	Назив (А–Ш)
 	Name:	Назив:
@@ -888,6 +893,8 @@
 	Space before: {pt} pt	Размак пре: {pt} пт
 	Spacing	Размак
 	Spacing (pt):	Размак (пт):
+	Kerning for fonts:	Кернинг фонтова:
+	Points and above	пт и више
 	Speech	Говор
 	Spelling & Grammar	Правопис и граматика
 	Spelling &\nGrammar	Правопис\nи граматика
@@ -1497,6 +1504,8 @@
 	Math AutoCorrect	Аутоматска исправка математике
 	More >>	Више >>
 	Moves	Премештања
+	Moved from:	Премештено одавде:
+	Moved to:	Премештено овде:
 	New document	Нови документ
 	No changes (read only)	Без измена (само за читање)
 	Only allow this kind of editing:	Дозволи само ову врсту уређивања:
@@ -1556,6 +1565,8 @@
 	Customize Ribbon	Прилагоди траку
 	Add to Quick Access Toolbar	Додај на траку са алаткама за брзи приступ
 	Remove from Quick Access Toolbar	Уклони са траке са алаткама за брзи приступ
+	Hide Quick Access Toolbar	Сакриј траку са алаткама за брзи приступ
+	Show Quick Access Toolbar	Прикажи траку са алаткама за брзи приступ
 	Customize the Ribbon…	Прилагоди траку…
 	Customize Quick Access Toolbar…	Прилагоди траку са алаткама за брзи приступ…
 	More Commands…	Још команди…
@@ -2059,6 +2070,7 @@
 	Hyphenation zone:	Зона дељења речи:
 	Italian	Италијански
 	Croatian	Хрватски
+	Indonesian	Индонежански
 	Japanese	Јапански
 	Korean	Корејски
 	Limit consecutive hyphens to:	Највише узастопних цртица:
@@ -2142,6 +2154,10 @@
 	Contains	Садржи
 	Does not contain	Не садржи
 	{count} of {total} recipients will be merged.	Прималаца за спајање: {count} од {total}.
+	Find in list:	Пронађи на листи:
+	Any field	Било које поље
+	Matches: {count}	Подударања: {count}
+	Show only records that will be merged	Прикажи само записе који ће бити обједињени
 	Take the last match on the page	Узми последње подударање на страници
 	Show its list number	Прикажи његов број у листи
 	Show its number relative to this field	Прикажи његов број у односу на ово поље
@@ -2247,3 +2263,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	Уска
 	Medium	Средња
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Споји ћелије пре дељења
+	Table size	Величина табеле
+	AutoFit behavior	Аутоматско уклапање
+	Initial column width:	Почетна ширина колоне:
+	AutoFit to contents	Аутоматски уклопи према садржају
+	AutoFit to window	Аутоматски уклопи према прозору
+	Separate text at	Раздвоји текст на
+	Commas	Зарези
+	Other:	Друго:
+	The number must be between 1 and {max}.	Број мора бити између 1 и {max}.
+	The measurement must be between {min} and {max}.	Мера мора бити између {min} и {max}.
+	Recently Used Fonts	Недавно коришћени фонтови
+	All Fonts	Сви фонтови
+	Spike	Сакупљач
+	Insert Spike	Уметни из сакупљача
+# Add Font status (#1789)
+	Added 1 font	Додат је 1 фонт
+	Added {n} fonts	Додато фонтова: {n}
+	{added}; {count} couldn't be read: {names}	{added}; није могуће прочитати ({count}): {names}
+	{names} and {n} more	{names} и још {n}
+	{added}; {n} skipped (limit {max})	{added}; прескочено: {n} (ограничење {max})
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	У тексту
+	In margin	На маргини
+	Drop Cap Options…	Опције украсног слова…
+	Lines to drop:	Број редова:
+	Distance from text:	Растојање од текста:
+	Distance from text	Растојање од текста
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Закључај однос ширине и висине
+	Relative to original picture size	У односу на оригиналну величину слике
+	Original size	Оригинална величина
+	{width} × {height} pixels	{width} × {height} пиксела
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Унесите величину у било којој јединици, на пример 5 cm или 300 px. Друга страна се прилагођава, па слика задржава своје пропорције.
+
+	Import…	Увези…

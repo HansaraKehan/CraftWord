@@ -191,6 +191,7 @@
 	Use the Insert key to switch overtype on and off	Använd Insert-tangenten för att slå på och av överskrivning
 	Whole document	Hela dokumentet
 	This section	Det här avsnittet
+	Selected text	Markerad text
 	Fill	Fyllning
 	Setting:	Inställning:
 	3-D	3D
@@ -573,6 +574,10 @@
 	More templates →	Fler mallar →
 	Move or Resize	Flytta eller ändra storlek
 	Multilevel List	Lista med flera nivåer
+	Multilevel List Library	Bibliotek med listor med flera nivåer
+	Article I.	Artikel I.
+	Chapter 1	Kapitel 1
+	Section 1.01	Avsnitt 1.01
 	Multiple Pages	Flera sidor
 	Name (A–Z)	Namn (A–Ö)
 	Name:	Namn:
@@ -858,6 +863,8 @@
 	Space before/after:	Avstånd före/efter:
 	Spacing	Avstånd
 	Spacing (pt):	Avstånd (pt):
+	Kerning for fonts:	Kerning för teckensnitt:
+	Points and above	punkter och större
 	Speech	Tal
 	Spelling & Grammar	Stavning och grammatik
 	Spelling &\nGrammar	Stavning och\ngrammatik
@@ -1569,6 +1576,8 @@
 	Customize Ribbon	Anpassa verktygspanelen
 	Add to Quick Access Toolbar	Lägg till i snabbverktygsfältet
 	Remove from Quick Access Toolbar	Ta bort från snabbverktygsfältet
+	Hide Quick Access Toolbar	Dölj snabbverktygsfältet
+	Show Quick Access Toolbar	Visa snabbverktygsfältet
 	Customize the Ribbon…	Anpassa verktygspanelen…
 	Customize Quick Access Toolbar…	Anpassa snabbverktygsfältet…
 	More Commands…	Fler kommandon…
@@ -1776,6 +1785,7 @@
 	{name} already exists. Choose Save again to replace it.	{name} finns redan. Välj Spara igen för att ersätta den.
 	This folder can't be read: {error}	Den här mappen kan inte läsas: {error}
 	Showing the first {count} items.	Visar de första {count} objekten.
+	No items to show.	Inga objekt att visa.
 	File name:	Filnamn:
 	Browse in WordCraft…	Bläddra i WordCraft…
 	Open a file with WordCraft's own browser when the system file dialog doesn't appear.	Öppna en fil med WordCrafts egen filbläddrare när systemets fildialogruta inte visas.
@@ -2546,6 +2556,7 @@ preview	Title	Titel
 	Local font access was denied.	Åtkomst till lokala typsnitt nekades.
 	Loaded {count} system fonts.	{count} systemtypsnitt har lästs in.
 	Croatian	Kroatiska
+	Indonesian	Indonesiska
 	Text of the nearest paragraph with a given style (running headers)	Text från närmaste stycke med en viss stil (löpande sidhuvuden)
 	Style name:	Stilnamn:
 	Filter Recipients	Filtrera mottagare
@@ -2572,6 +2583,10 @@ preview	Title	Titel
 	Contains	Innehåller
 	Does not contain	Innehåller inte
 	{count} of {total} recipients will be merged.	{count} av {total} mottagare kopplas.
+	Find in list:	Sök i listan:
+	Any field	Valfritt fält
+	Matches: {count}	Träffar: {count}
+	Show only records that will be merged	Visa bara poster som ska kopplas
 	Take the last match on the page	Använd den sista träffen på sidan
 	Show its list number	Visa dess listnummer
 	Show its number relative to this field	Visa dess nummer i förhållande till det här fältet
@@ -2647,3 +2662,55 @@ preview	Title	Titel
 	Bottom Right Cell	Nedre högra cellen
 	Inside Horizontal Border	Inre vågrät kantlinje
 	Inside Vertical Border	Inre lodrät kantlinje
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Sammanfoga celler före delning
+	Table size	Tabellstorlek
+	AutoFit behavior	Autopassning
+	Initial column width:	Ursprunglig kolumnbredd:
+	AutoFit to contents	Autoanpassa efter innehåll
+	AutoFit to window	Autoanpassa efter fönster
+	Separate text at	Avgränsa text vid
+	Commas	Kommatecken
+	Other:	Annat:
+	The number must be between 1 and {max}.	Talet måste vara mellan 1 och {max}.
+	The measurement must be between {min} and {max}.	Måttet måste vara mellan {min} och {max}.
+	Recently Used Fonts	Senast använda typsnitt
+	All Fonts	Alla typsnitt
+	Moved from:	Flyttat från:
+	Moved to:	Flyttat till:
+	Spike	Samlare
+	Insert Spike	Infoga samlare
+# Add Font status (#1789)
+	Added 1 font	1 teckensnitt har lagts till
+	Added {n} fonts	{n} teckensnitt har lagts till
+	{added}; {count} couldn't be read: {names}	{added}; {count} kunde inte läsas: {names}
+	{names} and {n} more	{names} och {n} till
+	{added}; {n} skipped (limit {max})	{added}; {n} hoppades över (gräns {max})
+	nothing is selected	inget är markerat
+	select a picture or shape first	markera först en bild eller form
+	select recipients first	markera först mottagare
+	select two or more pictures or shapes first (Shift+click)	markera två eller fler bilder eller former (Skift+klick)
+	text boxes can't go inside a text box	textrutor kan inte placeras i en textruta
+	the cursor isn't in a table	markören är inte i en tabell
+	{name} options	Alternativ för {name}
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	I texten
+	In margin	I marginalen
+	Drop Cap Options…	Alternativ för anfang…
+	Lines to drop:	Antal rader:
+	Distance from text:	Avstånd från text:
+	Distance from text	Avstånd från text
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	stycket är tomt
+	the paragraph starts with a space	stycket börjar med ett blanksteg
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	Lås proportioner
+	Relative to original picture size	I förhållande till bildens ursprungliga storlek
+	Original size	Ursprunglig storlek
+	{width} × {height} pixels	{width} × {height} pixlar
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Skriv en storlek i valfri enhet, till exempel 5 cm eller 300 px. Den andra sidan följer med, så att bilden behåller sina proportioner.
+
+	Import…	Importera…

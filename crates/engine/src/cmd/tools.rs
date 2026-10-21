@@ -48,6 +48,7 @@ pub const AUTOCORRECT: &[(&str, &str)] = &[
     ("(tm)", "™"),
     ("...", "…"),
     ("->", "→"),
+    ("-->", "→"),
     ("<-", "←"),
     ("=>", "⇒"),
     (":)", "☺"),
@@ -112,6 +113,11 @@ pub struct AutoCorrectPrefs {
     pub exceptions_removed: Vec<String>,
     /// The user's words that keep two initial capitals (besides the built-in ones).
     pub initial_caps_exceptions: Vec<String>,
+    /// Undoing (or backspacing and retyping) an automatic sentence capital adds the word before
+    /// it to the exceptions (First Letter's "Automatically add words to list").
+    pub auto_add_first_letter: bool,
+    /// The same for undoing a TWo INitial CApitals fix (INitial CAps's switch).
+    pub auto_add_initial_caps: bool,
 }
 
 impl Default for AutoCorrectPrefs {
@@ -137,6 +143,8 @@ impl Default for AutoCorrectPrefs {
             exceptions: Vec::new(),
             exceptions_removed: Vec::new(),
             initial_caps_exceptions: Vec::new(),
+            auto_add_first_letter: true,
+            auto_add_initial_caps: true,
         }
     }
 }
@@ -212,6 +220,30 @@ impl AutoCorrectPrefs {
         v
     }
 
+    /// Add a First Letter exception (lowercase; one the built-in list has just stops being deleted).
+    fn add_exception(&mut self, e: String) {
+        if !plain_word(&e) {
+            return;
+        }
+        self.exceptions_removed.retain(|r| *r != e);
+        if !NOT_SENTENCE_END.contains(&e.as_str()) && !self.exceptions.contains(&e) && self.exceptions.len() < MAX_ENTRIES {
+            self.exceptions.push(e);
+        }
+    }
+
+    /// Add a word that keeps its two initial capitals.
+    fn add_initial_caps_exception(&mut self, w: &str) {
+        if !plain_word(w) {
+            return;
+        }
+        if !INITIAL_CAPS_EXCEPTIONS.contains(&w)
+            && !self.initial_caps_exceptions.iter().any(|e| e == w)
+            && self.initial_caps_exceptions.len() < MAX_ENTRIES
+        {
+            self.initial_caps_exceptions.push(w.to_string());
+        }
+    }
+
     /// Abbreviations after which a sentence doesn't end, lowercase.
     pub fn exception_list(&self) -> Vec<String> {
         let mut v: Vec<String> = NOT_SENTENCE_END
@@ -223,6 +255,50 @@ impl AutoCorrectPrefs {
         v.sort();
         v.dedup();
         v
+    }
+}
+
+/// Is `w` a word an exception list may hold: one short line, no spaces or object characters?
+fn plain_word(w: &str) -> bool {
+    !w.trim().is_empty() && w.chars().count() <= MAX_FROM && !w.contains(|c: char| c.is_whitespace() || c == '\u{FFFC}')
+}
+
+/// The newest automatic capitalisation (a sentence capital, a TWo INitial CApitals fix), kept so
+/// that undoing it, or backspacing it and typing the word again, makes an exception (#1857).
+#[derive(Clone, Debug)]
+pub struct AutoCap {
+    /// Undo steps pushed (ever) right after the change (`u64::MAX` until the caller has pushed its step).
+    pub(crate) depth: u64,
+    story: wordcraft_doc::StoryRef,
+    path: wordcraft_doc::Path,
+    /// Byte offset of the word in its paragraph.
+    start: usize,
+    /// The token before a sentence capital's word, lowercase ("there."); empty when none or when
+    /// the capital wasn't a sentence one.
+    prev: String,
+    /// The TWo INitial CApitals word as typed ("TWo").
+    two_caps: Option<String>,
+    /// The user backspaced into the word after the change.
+    backspaced: bool,
+}
+
+impl AutoCap {
+    pub(crate) fn add_exceptions(self, ac: &mut AutoCorrectPrefs) {
+        if ac.auto_add_first_letter && !self.prev.is_empty() {
+            ac.add_exception(self.prev);
+        }
+        if ac.auto_add_initial_caps
+            && let Some(w) = self.two_caps
+        {
+            ac.add_initial_caps_exception(&w);
+        }
+    }
+
+    /// A Backspace deleted `a..f`; it reached back over the capitalised word's first letter.
+    pub(crate) fn note_backspace(&mut self, a: &Pos, f: &Pos) {
+        if f.story == self.story && f.path == self.path && a.off <= self.start && f.off > self.start {
+            self.backspaced = true;
+        }
     }
 }
 
@@ -252,6 +328,8 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         ("bullets", &mut ac.bullets),
         ("numbering", &mut ac.numbering),
         ("borderLines", &mut ac.border_lines),
+        ("autoAddFirstLetter", &mut ac.auto_add_first_letter),
+        ("autoAddInitialCaps", &mut ac.auto_add_initial_caps),
     ] {
         if let Some(b) = p::bool(v, k) {
             *f = b;
@@ -286,10 +364,7 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         if bad(&e, MAX_FROM) || e.contains(char::is_whitespace) {
             return Err(CmdError::Params("an exception is one abbreviation, like \"approx.\"".into()));
         }
-        ac.exceptions_removed.retain(|r| *r != e);
-        if !NOT_SENTENCE_END.contains(&e.as_str()) && !ac.exceptions.contains(&e) && ac.exceptions.len() < MAX_ENTRIES {
-            ac.exceptions.push(e);
-        }
+        ac.add_exception(e);
     }
     if let Some(e) = p::str(v, "deleteException") {
         let e = e.trim().to_lowercase();
@@ -303,12 +378,7 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         if bad(w, MAX_FROM) || w.contains(char::is_whitespace) {
             return Err(CmdError::Params("an INitial CAps exception is one word, like \"IDs\"".into()));
         }
-        if !INITIAL_CAPS_EXCEPTIONS.contains(&w)
-            && !ac.initial_caps_exceptions.iter().any(|e| e == w)
-            && ac.initial_caps_exceptions.len() < MAX_ENTRIES
-        {
-            ac.initial_caps_exceptions.push(w.to_string());
-        }
+        ac.add_initial_caps_exception(w);
     }
     if let Some(w) = p::str(v, "deleteInitialCapsException") {
         let w = w.trim();
@@ -331,6 +401,8 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         "bullets": ac.bullets,
         "numbering": ac.numbering,
         "borderLines": ac.border_lines,
+        "autoAddFirstLetter": ac.auto_add_first_letter,
+        "autoAddInitialCaps": ac.auto_add_initial_caps,
         "entries": ac.list().into_iter().map(|(a, b, builtin)| json!({"from": a, "to": b, "builtIn": builtin})).collect::<Vec<_>>(),
         "user": ac.entries,
         "exceptions": ac.exception_list(),
@@ -366,7 +438,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         CommandSpec::new("tools.autocorrect", "AutoCorrect Options", "File › Options › Proofing", autocorrect_options)
             .params(
-                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
+                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "autoAddFirstLetter"|"autoAddInitialCaps"?: bool (Automatically add words to the exception lists when an automatic capital is undone; default true), "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
             )
             .pure(),
         CommandSpec::new("tools.customizeKeyboard", "Customize Keyboard", "File › Options", customize_keyboard)
@@ -455,11 +527,12 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"hint": "Save or export a copy (PDF, Word document) to share it."}))
         })
         .pure(),
-        CommandSpec::new("insert.quickParts", "Quick Parts", "Insert › Text", quick_parts)
-            .params(r#"{"save"?: name (from the selection), "insert"?: name, "delete"?: name} → list"#),
-        CommandSpec::new("insert.autoText", "AutoText", "Insert › Text › Quick Parts", quick_parts)
+        CommandSpec::new("insert.quickParts", "Quick Parts", "Insert › Text", |s, v| quick_parts(s, v, wordcraft_doc::QUICK_PARTS_GALLERY)).params(
+            r#"{"save"?: name (from the selection), "in"?: "document" (save into the document's own building blocks, kept in its file; else this session's), "insert"?: name, "delete"?: name} → {"parts": names (this session's, then the document's Quick Parts), "document": the document's Quick Parts}"#,
+        ),
+        CommandSpec::new("insert.autoText", "AutoText", "Insert › Text › Quick Parts", |s, v| quick_parts(s, v, wordcraft_doc::AUTO_TEXT_GALLERY))
             .key(super::non_mac("Alt+F3"))
-            .params(r#"{"save"?: name, "insert"?: name}"#),
+            .params(r#"{"save"?: name, "in"?: "document", "insert"?: name, "delete"?: name} → {"parts": names, "document": the document's AutoText}"#),
         CommandSpec::new("insert.docProperty", "Document Property", "Insert › Text › Quick Parts", |s, v| {
             let name = p::str(v, "name").unwrap_or("Title").to_string();
             let c = &s.doc.core;
@@ -778,34 +851,49 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
     if word.is_empty() {
         return Ok(());
     }
+    // The word's language (run, paragraph style, document default) picks the replacement list
+    // (#835) and the case mapping (#1923). Text with no language at all is in the editing
+    // language (a Polish interface writes Polish), else English.
+    let lang: Option<String> = s.doc.para_at(&f).and_then(|p| {
+        let rc = s.doc.styles.resolve_char(p.props.style.as_deref(), p.props_of_char(start));
+        rc.lang.clone()
+    });
+    let lang = lang.or_else(|| s.editing_lang.clone());
+    let turkic = is_turkic(lang.as_deref());
     // TWo INitial CApitals and cAPS LOCK come first, so "TEh" is still a replacement's typo.
-    if let Some((at, reps)) = case_fix(&ac, &word) {
+    if let Some((at, reps)) = case_fix(&ac, &word, turkic) {
         let para = s.doc.para_mut(f.story, &f.path)?;
         let letters = word.get(at..).unwrap_or("").chars().take(reps.len()).collect::<String>();
         let mut end = start + at + letters.len();
         for (c, rep) in letters.chars().rev().zip(reps.iter().rev()) {
             let from = end.saturating_sub(c.len_utf8());
             if rep.chars().ne(std::iter::once(c)) {
-                let props = para.props_of_char(from).clone();
+                let props = para.props_of_char(from).clone().without_symbol();
                 para.delete(from, end)?;
                 para.insert_text(from, rep, &props)?;
             }
             end = from;
         }
+        s.autocap = Some(AutoCap {
+            depth: u64::MAX,
+            story: f.story,
+            path: f.path.clone(),
+            start,
+            prev: String::new(),
+            two_caps: (ac.two_initial_caps
+                && letters.chars().nth(1).is_some_and(char::is_uppercase)
+                && letters.chars().next().is_some_and(char::is_uppercase))
+            .then(|| letters.clone()),
+            backspaced: false,
+        });
         let fixed: String = reps.concat();
         f.off = (f.off + fixed.len()).saturating_sub(letters.len());
         s.sel = Selection::caret(f.clone());
         word = format!("{}{fixed}{}", word.get(..at).unwrap_or(""), word.get(at + letters.len()..).unwrap_or(""));
     }
-    // A whole-word replacement, else "wait..." → "wait…".
-    // The word's language (run, paragraph style, document default) picks the list (#835).
-    // Text with no language at all is in the editing language (a Polish interface writes Polish),
-    // else English. Proofing decides what is English the same way.
-    let english = s.doc.para_at(&f).is_none_or(|p| {
-        let rc = s.doc.styles.resolve_char(p.props.style.as_deref(), p.props_of_char(start));
-        let lang = rc.lang.as_deref().or(s.editing_lang.as_deref());
-        wordcraft_proof::ProofLang::from_tag(lang) == wordcraft_proof::ProofLang::En
-    });
+    // A whole-word replacement, else "wait..." → "wait…". Proofing decides what is English the
+    // same way (#835).
+    let english = s.doc.para_at(&f).is_none_or(|_| wordcraft_proof::ProofLang::from_tag(lang.as_deref()) == wordcraft_proof::ProofLang::En);
     let found = if ac.replace_text { ac.replacement_in(&word, english) } else { None };
     let (from, rep) = match found {
         Some(r) => (start, Some(r)),
@@ -817,11 +905,13 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
         },
         None => (start, None),
     };
+    let replaced = rep.is_some();
     let mut caret = f.off;
     if let Some(rep) = rep {
         let end = start + word.len();
         let para = s.doc.para_mut(f.story, &f.path)?;
-        let props = para.props_of_char(from).clone();
+        // The replacement is text: a symbol it replaces doesn't give it its symbol font (#2036).
+        let props = para.props_of_char(from).clone().without_symbol();
         para.delete(from, end)?;
         para.insert_text(from, &rep, &props)?;
         caret = (f.off + rep.len()).saturating_sub(end - from);
@@ -865,20 +955,78 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
     } else {
         last
     };
-    let sentence = sentence_on && starts_sentence(before_word, &exceptions) && should_capitalize(first, next);
+    let mut sentence = sentence_on && starts_sentence(before_word, &exceptions) && should_capitalize(first, next);
+    let prev = if sentence { prev_token(before_word) } else { String::new() };
+    // Typing the word again after backspacing an automatic capital: the user doesn't want it
+    // (Word's "Automatically add words to list"); an exception, so no capital this time either.
+    if sentence
+        && !prev.is_empty()
+        && s.autocap.take_if(|c| c.backspaced && c.story == f.story && c.path == f.path && c.start == start && c.prev == prev).is_some()
+        && ac.auto_add_first_letter
+    {
+        s.prefs.autocorrect.add_exception(prev.clone());
+        sentence = false;
+    }
     let day = ac.cap_days && DAYS.contains(&first);
     if sentence || day {
         let para = s.doc.para_mut(f.story, &f.path)?;
         if let Some(c) = word.chars().next() {
-            let up: String = c.to_uppercase().collect();
-            let props = para.props_of_char(start).clone();
+            let up = upper_char(c, turkic);
+            let props = para.props_of_char(start).clone().without_symbol();
             para.delete(start, start + c.len_utf8())?;
             para.insert_text(start, &up, &props)?;
             let off = (caret + up.len()).saturating_sub(c.len_utf8());
-            s.sel = Selection::caret(Pos { off, ..f });
+            s.sel = Selection::caret(Pos { off, ..f.clone() });
+            if sentence && !prev.is_empty() && !replaced {
+                match s.autocap.as_mut().filter(|c| c.depth == u64::MAX) {
+                    Some(c) => c.prev = prev,
+                    None => {
+                        s.autocap = Some(AutoCap { depth: u64::MAX, story: f.story, path: f.path, start, prev, two_caps: None, backspaced: false })
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// The lowercase token before a word that starts a sentence ("there." in "there. world"), as
+/// [`starts_sentence`] reads it; empty at the start of a paragraph.
+fn prev_token(before: &str) -> String {
+    let t = before.trim_end().trim_end_matches(|c: char| "\"'”’)]".contains(c));
+    // Only full stops: Word's exception was observed with "there." (`there?` isn't added).
+    if !t.ends_with('.') {
+        return String::new();
+    }
+    t.rsplit(char::is_whitespace).next().unwrap_or("").trim_start_matches(|c: char| "\"'“‘([".contains(c)).to_lowercase()
+}
+
+/// Turkish, Azerbaijani (and Crimean Tatar) map `i`/`İ` and `ı`/`I` as pairs (#1923).
+fn is_turkic(lang: Option<&str>) -> bool {
+    if wordcraft_proof::ProofLang::from_tag(lang) == wordcraft_proof::ProofLang::Tr {
+        return true; // tr, tur, any region, same normalisation as proofing
+    }
+    let Some(tag) = lang.map(str::trim) else { return false };
+    let primary = tag.split(['-', '_']).next().unwrap_or("");
+    ["az", "aze", "crh"].iter().any(|c| primary.eq_ignore_ascii_case(c))
+}
+
+/// A letter in capitals: `i` → `İ` in Turkic languages, otherwise the Unicode default.
+fn upper_char(c: char, turkic: bool) -> String {
+    if turkic && c == 'i' {
+        return "\u{130}".to_string();
+    }
+    c.to_uppercase().collect()
+}
+
+/// A letter in lowercase: `I` → `ı` in Turkic languages. `İ` is always the single letter `i`,
+/// never `i` plus a combining dot.
+fn lower_char(c: char, turkic: bool) -> String {
+    match c {
+        'I' if turkic => "\u{131}".to_string(),
+        '\u{130}' => "i".to_string(),
+        _ => c.to_lowercase().collect(),
+    }
 }
 
 /// Built-in words that keep their two initial capitals (plurals of two-letter abbreviations).
@@ -890,7 +1038,7 @@ const CAPS_LOCK_EXCEPTIONS: &[&str] = &["iOS", "mRNA", "tRNA", "rRNA", "cDNA", "
 /// The capitalisation fix for a finished word: TWo INitial CApitals ("WOrd" → "Word") or cAPS
 /// LOCK ("wORD" → "Word"). Returns the byte offset of the word's letters and each letter's
 /// replacement. Only words of three or more letters, optionally in quotes or brackets.
-fn case_fix(caps: &AutoCorrectPrefs, word: &str) -> Option<(usize, Vec<String>)> {
+fn case_fix(caps: &AutoCorrectPrefs, word: &str, turkic: bool) -> Option<(usize, Vec<String>)> {
     if !caps.two_initial_caps && !caps.caps_lock {
         return None;
     }
@@ -907,7 +1055,7 @@ fn case_fix(caps: &AutoCorrectPrefs, word: &str) -> Option<(usize, Vec<String>)>
         _ => return None,
     };
     let one = |c: char| c.to_string();
-    let lower = |c: char| c.to_lowercase().collect::<String>();
+    let lower = |c: char| lower_char(c, turkic);
     if caps.two_initial_caps
         && a.is_uppercase()
         && b.is_uppercase()
@@ -918,7 +1066,7 @@ fn case_fix(caps: &AutoCorrectPrefs, word: &str) -> Option<(usize, Vec<String>)>
         return Some((at, std::iter::once(one(a)).chain(std::iter::once(lower(b))).chain(more.iter().map(|&c| one(c))).collect()));
     }
     if caps.caps_lock && a.is_lowercase() && b.is_uppercase() && more.iter().all(|c| c.is_uppercase()) && !CAPS_LOCK_EXCEPTIONS.contains(&letters) {
-        let up = a.to_uppercase().collect::<String>();
+        let up = upper_char(a, turkic);
         return Some((at, std::iter::once(up).chain(std::iter::once(lower(b))).chain(more.iter().map(|&c| lower(c))).collect()));
     }
     None
@@ -1552,25 +1700,66 @@ fn tables_hiding_text(doc: &Document, story: StoryRef, blocks: &wordcraft_doc::B
     }
 }
 
-fn quick_parts(s: &mut Session, v: &Value) -> CmdResult {
+/// Insert › Quick Parts and AutoText: this session's building blocks, and the document's own
+/// (`Document::glossary`, kept in its file) in `gallery`. A name is looked up in the session's
+/// first, then in the document's (`gallery` first).
+fn quick_parts(s: &mut Session, v: &Value, gallery: &str) -> CmdResult {
+    let in_document = p::str(v, "in") == Some("document");
     if let Some(name) = p::str(v, "save") {
         let (a, b) = s.sel.ordered();
         if a == b {
             return Err(CmdError::Params("select the content to save".into()));
         }
         let frag = s.doc.copy_range(&a, &b);
-        s.building_blocks.insert(name.to_string(), frag);
+        if in_document {
+            if name.trim().is_empty() {
+                return Err(CmdError::Params("a building block needs a name".into()));
+            }
+            let blocks: wordcraft_doc::Blocks = frag.blocks.into_iter().map(Arc::new).collect();
+            match s.doc.glossary.iter_mut().find(|e| e.name == name && e.gallery == gallery) {
+                Some(e) => e.blocks = blocks,
+                None => s.doc.glossary.push(wordcraft_doc::BuildingBlock {
+                    name: name.to_string(),
+                    gallery: gallery.to_string(),
+                    category: "General".into(),
+                    blocks,
+                    ..Default::default()
+                }),
+            }
+        } else {
+            s.building_blocks.insert(name.to_string(), frag);
+        }
     }
-    if let Some(name) = p::str(v, "delete") {
-        s.building_blocks.remove(name);
+    if let Some(name) = p::str(v, "delete")
+        && (in_document || s.building_blocks.remove(name).is_none())
+        && let Some(i) = document_entry(&s.doc, name, gallery)
+    {
+        s.doc.glossary.remove(i);
     }
     if let Some(name) = p::str(v, "insert") {
-        let frag = s.building_blocks.get(name).cloned().ok_or_else(|| CmdError::Params(format!("no Quick Part `{name}`")))?;
+        let frag = match s.building_blocks.get(name) {
+            Some(f) => f.clone(),
+            None => {
+                let e = document_entry(&s.doc, name, gallery).and_then(|i| s.doc.glossary.get(i));
+                let e = e.ok_or_else(|| CmdError::Params(format!("no Quick Part `{name}`")))?;
+                wordcraft_doc::edit::Fragment { blocks: e.blocks.iter().map(|b| (**b).clone()).collect(), parts: Default::default() }
+            }
+        };
         let at = delete_selection(s)?;
         let end = s.doc.insert_fragment(&at, &frag)?;
         s.sel = Selection::caret(end);
     }
-    Ok(json!({"parts": s.building_blocks.keys().collect::<Vec<_>>()}))
+    let document: Vec<&str> = s.doc.glossary.iter().filter(|e| e.gallery == gallery).map(|e| e.name.as_str()).collect();
+    let mut parts: Vec<&str> = s.building_blocks.keys().map(String::as_str).collect();
+    let mut seen: std::collections::HashSet<&str> = parts.iter().copied().collect();
+    parts.extend(document.iter().copied().filter(|n| seen.insert(n)));
+    Ok(json!({"parts": parts, "document": document}))
+}
+
+/// The index of the document's building block `name`, in `gallery` if there is one there.
+fn document_entry(doc: &Document, name: &str, gallery: &str) -> Option<usize> {
+    let g = &doc.glossary;
+    g.iter().position(|e| e.name == name && e.gallery == gallery).or_else(|| g.iter().position(|e| e.name == name))
 }
 
 fn hf_nav(s: &mut Session, dir: i32) -> CmdResult {

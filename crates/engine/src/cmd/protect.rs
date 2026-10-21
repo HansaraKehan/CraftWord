@@ -10,8 +10,8 @@
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use wordcraft_doc::para::{InlineObject, OBJ};
-use wordcraft_doc::props::CharProps;
-use wordcraft_doc::{Document, Path, PermRange, Pos, StoryRef};
+use wordcraft_doc::props::{CellProps, CharProps, RowProps, TableProps};
+use wordcraft_doc::{Block, Blocks, Document, Path, PermRange, Pos, StoryRef};
 
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -189,6 +189,19 @@ fn remove_exceptions(s: &mut Session, all: bool) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The Developer tab's commands that insert a content control.
+const CONTROL_INSERTS: [&str; 9] = [
+    "developer.richText",
+    "developer.plainText",
+    "developer.picture",
+    "developer.buildingBlock",
+    "developer.checkBox",
+    "developer.comboBox",
+    "developer.dropDown",
+    "developer.datePicker",
+    "developer.repeatingSection",
+];
+
 /// Commands always allowed in a protected document: protection itself, file commands, undo.
 fn always_allowed(id: &str) -> bool {
     id == "review.restrict" || id.starts_with("file.") || id == "edit.undo" || id == "edit.redo"
@@ -205,9 +218,24 @@ pub(crate) fn check_before(s: &Session, id: &str, params: &Value) -> Result<bool
     // Word blocks content-control property edits until Stop Protection: changing a control's
     // lock flags would reshape what forms mode lets through. The param's presence is the
     // trigger — absent, the command keeps the current lock (as `check_formatting` inspects
-    // params); other properties (title, tag, placeholder…) are unaffected.
+    // params). In other modes, other properties (title, tag, placeholder…) stay editable; forms
+    // mode refuses every property change (below).
     if id == "developer.properties" && (params.get("lockEdit").is_some() || params.get("lockDelete").is_some()) {
         return Err(CmdError::Disabled(format!("{id}: stop protection before changing a content control's locks")));
+    }
+    // Observed in Word for Mac: with Filling in forms enforced, the Developer tab's control
+    // buttons and Properties are greyed out and a field's shortcut menu offers no Remove Content
+    // Control. The form's fields stay as they are; only their content is filled in.
+    if mode == "forms" {
+        if id == "developer.removeControl" {
+            return Err(CmdError::Disabled(format!("{id}: stop protection before removing a content control")));
+        }
+        if id == "developer.properties" {
+            return Err(CmdError::Disabled(format!("{id}: stop protection before changing a content control's properties")));
+        }
+        if CONTROL_INSERTS.contains(&id) {
+            return Err(CmdError::Disabled(format!("{id}: stop protection before inserting a content control")));
+        }
     }
     if s.doc.settings.protect_formatting {
         check_formatting(s, id, params)?;
@@ -222,6 +250,9 @@ pub(crate) fn check_before(s: &Session, id: &str, params: &Value) -> Result<bool
         "comments" if comment_ok => Ok(false),
         "comments" if exceptions() => Ok(true),
         "comments" => Err(CmdError::Disabled(format!("{id}: only comments are allowed in this document"))),
+        "trackedChanges" if matches!(id, "review.accept" | "review.reject" | "review.acceptAll" | "review.rejectAll" | "review.trackChanges") => {
+            Err(CmdError::Disabled(format!("{id}: changes to this document are tracked")))
+        }
         _ => Ok(false),
     }
 }
@@ -229,7 +260,7 @@ pub(crate) fn check_before(s: &Session, id: &str, params: &Value) -> Result<bool
 /// Formatting limited to a selection of styles: no direct formatting, and no locked style.
 fn check_formatting(s: &Session, id: &str, params: &Value) -> Result<(), CmdError> {
     let style = match id {
-        "para.style" | "format.charStyle" => p::str(params, "style"),
+        "para.style" | "format.charStyle" | "table.style" => p::str(params, "style"),
         "para.normal" => Some("Normal"),
         "para.heading1" => Some("Heading1"),
         "para.heading2" => Some("Heading2"),
@@ -245,7 +276,26 @@ fn check_formatting(s: &Session, id: &str, params: &Value) -> Result<(), CmdErro
         || id.starts_with("styles.create")
         || id.starts_with("styles.modify")
         || id.starts_with("styles.update")
-        || id.starts_with("styles.delete");
+        || id.starts_with("styles.delete")
+        // Direct formatting outside the prefixes: Paste Formatting, and table and cell formatting.
+        || matches!(
+            id,
+            "edit.pasteFormat"
+                | "table.shading"
+                | "table.borders"
+                | "table.borderPainter"
+                | "table.cellAlign"
+                | "table.cellMargins"
+                | "table.textDirection"
+                | "table.properties"
+                | "table.rowHeight"
+                | "table.newStyle"
+                | "table.modifyStyle"
+                | "table.deleteStyle"
+                | "tools.updateStyles"
+        )
+        // Attach Template updates the styles from it when asked (`linkStyles` is only a setting).
+        || (id == "tools.attachTemplate" && p::bool(params, "update") == Some(true));
     if direct {
         return Err(CmdError::Disabled(format!("{id}: formatting is limited to the document's styles")));
     }
@@ -261,19 +311,39 @@ enum HoleMode {
 }
 
 /// Did a command leave everything outside the editable regions as it was? Compares the text,
-/// run formatting and paragraph formatting outside the ranges `author` may edit, in every story.
+/// run formatting and paragraph formatting outside the ranges `author` may edit, in every story,
+/// and the formatting of every table, row and cell that holds any of that protected content, and what
+/// reaches the whole document: page setup, the document defaults and the existing styles
+/// (applying a style may add one).
 pub(crate) fn outside_unchanged(before: &Document, after: &Document, author: &str) -> bool {
     // Protection can't change mid-command (`protection_lifted` guards undo and redo).
     let mode = if Some("forms") == before.settings.protection.as_deref() { HoleMode::Controls } else { HoleMode::Perms(author.into()) };
-    outside(before, &mode) == outside(after, &mode)
+    let (b, a) = (&before.styles, &after.styles);
+    before.last_section == after.last_section
+        && sections(before) == sections(after)
+        && b.default_chr == a.default_chr
+        && b.default_para == a.default_para
+        && b.styles.iter().all(|st| a.get(&st.id) == Some(st))
+        && outside(before, &mode) == outside(after, &mode)
 }
 
-/// One piece of protected content: text with its formatting, or a paragraph mark's formatting.
+/// The section properties paragraphs end, in order.
+fn sections(doc: &Document) -> Vec<&wordcraft_doc::SectionProps> {
+    doc.para_paths(StoryRef::Body).iter().filter_map(|path| doc.para(StoryRef::Body, path)?.section.as_deref()).collect()
+}
+
+/// One piece of protected content: text with its formatting, a paragraph mark's formatting, or
+/// the formatting of a table, row or cell holding protected content.
 #[derive(PartialEq, Debug)]
 enum Piece {
     Text(String, CharProps),
     Object(Option<InlineObject>),
     Mark(Box<wordcraft_doc::ParaProps>, CharProps),
+    /// Tables nested deeper than the paragraph walk reaches, compared as a whole.
+    Deep(String),
+    Table(Box<TableProps>, Vec<f32>),
+    Row(Box<RowProps>),
+    Cell(Box<CellProps>),
 }
 
 /// The control markers of a story that pair, bracket-style — the start and end positions of
@@ -304,8 +374,12 @@ fn outside(doc: &Document, mode: &HoleMode) -> Vec<Piece> {
             HoleMode::Perms(_) => !open.is_empty(),
             HoleMode::Controls => fillable.last() == Some(&true),
         };
+        // The paragraphs with protected content, and every table, row and cell above them.
+        let mut protected: HashSet<Vec<u32>> = HashSet::new();
+        let mut holding: HashSet<Vec<u32>> = HashSet::new();
         for path in doc.para_paths(story) {
             let Some(p) = doc.para(story, &path) else { continue };
+            let pieces = out.len();
             let mut k = 0;
             for (r, props) in p.run_ranges() {
                 let Some(text) = p.text.get(r.clone()) else { continue };
@@ -361,9 +435,54 @@ fn outside(doc: &Document, mode: &HoleMode) -> Vec<Piece> {
             if !in_hole(&open, &fillable) {
                 out.push(Piece::Mark(Box::new(p.props.clone()), p.mark.clone()));
             }
+            let ancestors = (1..path.0.len()).filter_map(|n| path.0.get(..n));
+            if out.len() > pieces {
+                protected.extend(ancestors.clone().map(<[u32]>::to_vec));
+            }
+            holding.extend(ancestors.map(<[u32]>::to_vec));
+        }
+        if let Some(blocks) = doc.story(story) {
+            structure(blocks, &mut Vec::new(), &protected, &holding, &mut out, 0);
         }
     }
     out
+}
+
+/// The formatting of every table, row and cell in `blocks` that holds protected content (or no
+/// paragraph at all): an exception covering only some of it can't reformat the rest.
+fn structure(blocks: &Blocks, prefix: &mut Vec<u32>, protected: &HashSet<Vec<u32>>, holding: &HashSet<Vec<u32>>, out: &mut Vec<Piece>, depth: usize) {
+    // `Document::para_paths` stops at the same depth; deeper nesting can't hold an editable
+    // exception, so any change below it counts as a change to protected content.
+    if depth > 16 {
+        if !blocks.is_empty() {
+            out.push(Piece::Deep(format!("{blocks:?}")));
+        }
+        return;
+    }
+    let guarded = |at: &Vec<u32>| protected.contains(at) || !holding.contains(at);
+    for (i, b) in blocks.iter().enumerate() {
+        let Block::Table(t) = &**b else { continue };
+        prefix.push(u32::try_from(i).unwrap_or(u32::MAX));
+        if guarded(prefix) {
+            out.push(Piece::Table(Box::new(t.props.clone()), t.grid.clone()));
+        }
+        for (r, row) in t.rows.iter().enumerate() {
+            prefix.push(u32::try_from(r).unwrap_or(u32::MAX));
+            if guarded(prefix) {
+                out.push(Piece::Row(Box::new(row.props.clone())));
+            }
+            for (c, cell) in row.cells.iter().enumerate() {
+                prefix.push(u32::try_from(c).unwrap_or(u32::MAX));
+                if guarded(prefix) {
+                    out.push(Piece::Cell(Box::new(cell.props.clone())));
+                }
+                structure(&cell.blocks, prefix, protected, holding, out, depth + 1);
+                prefix.pop();
+            }
+            prefix.pop();
+        }
+        prefix.pop();
+    }
 }
 
 fn flush(out: &mut Vec<Piece>, piece: &mut String, props: &CharProps, in_hole: bool) {
@@ -431,6 +550,167 @@ mod tests {
         assert_eq!(s.doc.settings.protection.as_deref(), Some("readOnly"));
     }
 
+    /// Table, row and cell formatting reaches protected text, so an exception inside one cell
+    /// doesn't let table commands run there change the table, the row or the cell (#1327).
+    #[test]
+    fn read_only_exception_in_a_cell_does_not_open_the_table() {
+        let mut s = Session::new(Document::from_text("Intro."));
+        s.run("insert.table", &json!({"rows": 2, "cols": 2})).unwrap();
+        for (i, t) in ["Alpha", "Bravo", "Charlie", "Delta"].iter().enumerate() {
+            if i > 0 {
+                s.run("text.tab", &json!({})).unwrap();
+            }
+            s.run("text.insert", &json!({"text": t})).unwrap();
+        }
+        select(&mut s, "Alpha");
+        s.run("review.restrict", &json!({"exception": "add"})).unwrap();
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        // Typing inside the exception still works.
+        select(&mut s, "lph");
+        s.run("text.insert", &json!({"text": "LPH"})).unwrap();
+        select(&mut s, "LPH");
+        let before = s.doc.clone();
+        for (id, v) in [
+            ("table.properties", json!({"align": "center"})),
+            ("table.rowHeight", json!({"height": 40})),
+            ("table.shading", json!({"color": "FF0000"})),
+            ("table.cellAlign", json!({"value": "bottomRight"})),
+            ("table.borders", json!({"kind": "none"})),
+        ] {
+            let e = s.run(id, &v).unwrap_err().to_string();
+            assert!(e.contains("only the editable regions"), "{id}: {e}");
+            assert_eq!(s.doc, before, "{id}");
+        }
+    }
+
+    /// A table wholly inside an exception stays formattable: its table, rows and cells hold no
+    /// protected content.
+    #[test]
+    fn read_only_exception_around_a_table_lets_it_be_formatted() {
+        let mut s = Session::new(Document::from_text("Locked.\nStart."));
+        s.sel = Selection::caret(s.doc.end_of(StoryRef::Body));
+        s.run("insert.table", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.run("text.insert", &json!({"text": "Alpha"})).unwrap();
+        select(&mut s, "Start.");
+        let anchor = s.sel.ordered().0;
+        s.sel = Selection { anchor, focus: s.doc.end_of(StoryRef::Body) };
+        s.run("review.restrict", &json!({"exception": "add"})).unwrap();
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        select(&mut s, "Alpha");
+        s.run("table.properties", &json!({"align": "center"})).unwrap();
+        s.run("table.rowHeight", &json!({"height": 40})).unwrap();
+        s.run("table.shading", &json!({"color": "FF0000"})).unwrap();
+        // The text before the exception is still protected.
+        select(&mut s, "Locked");
+        assert!(s.run("format.bold", &json!({})).is_err());
+    }
+
+    /// Formatting limited to styles: attaching a template refuses to update the styles from it
+    /// (it would bypass the Update Styles block); attaching without updating still works.
+    #[test]
+    fn formatting_restriction_refuses_attach_template_update() {
+        let mut t = Document::from_text("Template.");
+        if let Some(st) = t.styles.styles.iter_mut().find(|st| st.id == "Heading1") {
+            st.chr.size = Some(31.0);
+        }
+        let data = crate::cmd::insert::base64_encode(&crate::io::save_bytes("t.docx", &t).unwrap());
+        let mut s = Session::new(Document::from_text("Text."));
+        s.run("review.restrict", &json!({"mode": "none", "formatting": true})).unwrap();
+        let before = s.doc.clone();
+        let e = s.run("tools.attachTemplate", &json!({"path": "Report.dotx", "update": true, "data": data})).unwrap_err().to_string();
+        assert!(e.contains("formatting is limited"), "{e}");
+        assert_eq!(s.doc, before);
+        s.run("tools.attachTemplate", &json!({"path": "Report.dotx"})).unwrap();
+        assert_eq!(s.doc.settings.attached_template.as_deref(), Some("Report.dotx"));
+    }
+
+    /// Formatting limited to styles: Paste Formatting and table formatting are direct
+    /// formatting, and a locked table style can't be applied (#1327).
+    #[test]
+    fn formatting_restriction_covers_paste_formatting_and_tables() {
+        let mut s = Session::new(Document::from_text("Bold words.\nplain words."));
+        s.run("insert.table", &json!({"rows": 1, "cols": 1})).unwrap();
+        s.run("text.insert", &json!({"text": "Cell"})).unwrap();
+        select(&mut s, "Bold");
+        s.run("format.bold", &json!({})).unwrap();
+        s.run("edit.copyFormat", &json!({})).unwrap();
+        s.run("review.restrict", &json!({"formatting": true, "lockedStyles": ["TableGrid"]})).unwrap();
+        s.run("review.restrict", &json!({"mode": "none", "formatting": true})).unwrap();
+        assert!(s.doc.settings.protect_formatting);
+        select(&mut s, "plain");
+        let before = s.doc.clone();
+        assert!(s.run("edit.pasteFormat", &json!({})).is_err(), "edit.pasteFormat");
+        select(&mut s, "Cell");
+        for (id, v) in [
+            ("table.shading", json!({"color": "FF0000"})),
+            ("table.borders", json!({"kind": "none"})),
+            ("table.cellAlign", json!({"value": "bottomRight"})),
+            ("table.properties", json!({"align": "center"})),
+            ("table.rowHeight", json!({"height": 40})),
+            ("table.style", json!({"style": "TableGrid"})),
+        ] {
+            let e = s.run(id, &v).unwrap_err().to_string();
+            assert!(e.contains("formatting is limited") || e.contains("is locked"), "{id}: {e}");
+        }
+        assert_eq!(s.doc, before);
+    }
+
+    /// Page setup and style definitions reach text outside the exceptions too, so an exception
+    /// doesn't let them change; applying a character style inside one still works.
+    #[test]
+    fn read_only_exception_does_not_open_page_setup_or_styles() {
+        let mut s = Session::new(Document::from_text("Locked intro.\nFill in here.\nLocked end."));
+        select(&mut s, "Fill in here.");
+        s.run("review.restrict", &json!({"exception": "add"})).unwrap();
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        select(&mut s, "here");
+        let before = s.doc.clone();
+        assert!(s.run("layout.orientation", &json!({"value": "landscape"})).is_err());
+        assert!(s.run("layout.margins", &json!({"preset": "narrow"})).is_err());
+        assert!(s.run("styles.modify", &json!({"style": "Normal", "chr": {"bold": true}})).is_err());
+        assert_eq!(s.doc, before);
+        s.run("format.charStyle", &json!({"style": "Strong"})).unwrap();
+    }
+
+    /// Protected for tracked changes: every edit is tracked, and the changes can't be accepted,
+    /// rejected or untracked (Word disables them too).
+    #[test]
+    fn tracked_changes_protection_keeps_revisions() {
+        let mut s = Session::new(Document::from_text("Some text."));
+        s.run("review.restrict", &json!({"mode": "trackedChanges"})).unwrap();
+        select(&mut s, "text");
+        s.run("text.insert", &json!({"text": "words"})).unwrap();
+        let before = s.doc.clone();
+        for id in ["review.acceptAll", "review.rejectAll", "review.accept", "review.reject", "review.trackChanges"] {
+            assert!(s.run(id, &json!({})).is_err(), "{id}");
+        }
+        assert_eq!(s.doc, before);
+    }
+
+    /// Read only, no exceptions: going to a header the document doesn't have doesn't create
+    /// one, and loading or filtering recipients doesn't rewrite the merge fields' shown results
+    /// (both used to change the document from a non-mutating command, #1327).
+    #[test]
+    fn read_only_navigation_and_recipients_leave_the_document_alone() {
+        let mut s = Session::new(Document::from_text("Dear name,"));
+        select(&mut s, "name");
+        s.run("mailings.insertField", &json!({"field": "Name"})).unwrap();
+        s.run("mailings.recipients", &json!({"rows": [{"Name": "Ada"}, {"Name": "Bob"}]})).unwrap();
+        s.run("mailings.preview", &json!({"value": true})).unwrap();
+        assert!(s.doc.plain_text(StoryRef::Body).contains("Ada"));
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        let (before, depth) = (s.doc.clone(), s.undo_depth());
+        assert!(s.run("insert.editHeader", &json!({})).is_err());
+        assert!(s.run("insert.editFooter", &json!({})).is_err());
+        s.run("mailings.recipients", &json!({"rows": [{"Name": "Cyd"}]})).unwrap();
+        s.run("mailings.filterRecipients", &json!({"rules": [{"field": "Name", "op": "equal", "value": "Cyd"}]})).unwrap();
+        s.run("mailings.sortRecipients", &json!({"field": "Name", "descending": true})).unwrap();
+        s.run("mailings.editRecipients", &json!({"rows": [{"Name": "Dee"}]})).unwrap();
+        assert!(s.run("mailings.next", &json!({})).is_err());
+        assert_eq!(s.doc, before);
+        assert_eq!(s.undo_depth(), depth);
+    }
+
     #[test]
     fn forms_mode_allows_edits_only_inside_fillable_controls() {
         let mut s = Session::new(Document::from_text("Locked intro.\nPick size.\nFill name.\nLocked end."));
@@ -454,6 +734,36 @@ mod tests {
         assert!(s.run("text.insert", &json!({"text": "x"})).is_err());
         assert!(s.run("format.bold", &json!({})).is_err());
         assert_eq!(s.doc.plain_text(StoryRef::Body), before);
+    }
+
+    /// While Filling in forms is enforced, Word offers no Remove Content Control and greys out the
+    /// Developer tab's control buttons and Properties. WordCraft removed a fillable control (its
+    /// content left as plain text), inserted new controls inside one, and renamed one.
+    #[test]
+    fn forms_mode_keeps_its_controls() {
+        let mut s = Session::new(Document::from_text("Name: Fill name."));
+        select(&mut s, "Fill name.");
+        s.run("developer.richText", &json!({"tag": "name"})).unwrap();
+        s.run("review.restrict", &json!({"mode": "forms"})).unwrap();
+        let before = s.doc.clone();
+        assert!(s.run("developer.removeControl", &json!({"control": "name"})).is_err(), "by tag");
+        select(&mut s, "Fill");
+        let e = s.run("developer.removeControl", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("stop protection"), "at the caret: {e}");
+        assert_eq!(s.doc, before);
+        // No new control inside the field, and no property changes.
+        for insert in CONTROL_INSERTS {
+            assert!(s.run(insert, &json!({})).is_err(), "{insert}");
+        }
+        assert!(s.run("developer.properties", &json!({"control": "name", "tag": "other"})).is_err(), "tag");
+        assert_eq!(s.doc, before);
+        // Filling it is still allowed.
+        s.run("text.insert", &json!({"text": "Ada"})).unwrap();
+        assert_eq!(s.doc.control_ranges(StoryRef::Body).len(), 1);
+        // Once protection stops, the control can go.
+        s.run("review.restrict", &json!({"stop": true})).unwrap();
+        s.run("developer.removeControl", &json!({"control": "name"})).unwrap();
+        assert!(s.doc.control_ranges(StoryRef::Body).is_empty());
     }
 
     #[test]
@@ -495,7 +805,8 @@ mod tests {
     /// Word blocks content-control property edits until Stop Protection: while any restriction
     /// is enforced, `developer.properties` refuses to change a control's lock flags — the
     /// presence of `lockEdit`/`lockDelete` is the trigger, whatever their value (absent, they
-    /// keep the current lock). Other properties (title, tag…) stay editable.
+    /// keep the current lock). Under Filling in forms every property is refused (Word greys
+    /// Properties out); under the other modes the title and tag stay editable.
     #[test]
     fn lock_property_changes_are_refused_under_protection() {
         let mut s = Session::new(Document::from_text("Fill [pick] now."));
@@ -506,10 +817,9 @@ mod tests {
         assert!(s.run("developer.properties", &json!({"control": "free", "lockEdit": true})).is_err(), "lockEdit: true");
         assert!(s.run("developer.properties", &json!({"control": "free", "lockDelete": true})).is_err(), "lockDelete: true");
         assert!(s.run("developer.properties", &json!({"control": "free", "lockEdit": false})).is_err(), "lockEdit: false");
-        // Other properties still work, and the control stays fillable.
-        s.run("developer.properties", &json!({"control": "free", "title": "Renamed"})).unwrap();
-        let titled = s.doc.control_ranges(StoryRef::Body).iter().find(|r| r.control.tag == "free").map(|r| r.control.title.clone());
-        assert_eq!(titled, Some("Renamed".into()));
+        // Under forms protection the other properties are refused too.
+        assert!(s.run("developer.properties", &json!({"control": "free", "title": "Renamed"})).is_err(), "title");
+        assert_eq!(s.doc.fillable_controls(), 1);
         // Any enforced mode refuses it too: read only, even with an exception that allows edits.
         s.run("review.restrict", &json!({"stop": true})).unwrap();
         select(&mut s, "now");

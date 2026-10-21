@@ -440,6 +440,10 @@
 	Modify Style	Stili Değiştir
 	Modify…	Değiştir…
 	Multilevel List	Çok Düzeyli Liste
+	Multilevel List Library	Çok Düzeyli Liste Kitaplığı
+	Article I.	Madde I.
+	Chapter 1	Bölüm 1
+	Section 1.01	Kısım 1.01
 	Multiple Pages	Birden Çok Sayfa
 	Name (A–Z)	Ad (A–Z)
 	Name:	Ad:
@@ -698,6 +702,8 @@
 	Space before/after:	Önce/sonra boşluk:
 	Spacing	Aralık
 	Spacing (pt):	Aralık (pt):
+	Kerning for fonts:	Yazı tipi aralık ayarı:
+	Points and above	punto ve üzeri
 	Speech	Konuşma
 	Spelling & Grammar	Yazım ve Dilbilgisi
 	Spelling &\nGrammar	Yazım ve\nDilbilgisi
@@ -1619,6 +1625,7 @@ preview	Title	Örnek
 	Apply to:	Uygula:
 	Whole document	Tüm belge
 	This section	Bu bölüm
+	Selected text	Seçili metin
 	Fill	Dolgu
 	Setting:	Ayar:
 	3-D	3B
@@ -1768,6 +1775,8 @@ preview	Title	Örnek
 	Customize Ribbon	Şeridi Özelleştir
 	Add to Quick Access Toolbar	Hızlı Erişim Araç Çubuğuna Ekle
 	Remove from Quick Access Toolbar	Hızlı Erişim Araç Çubuğundan Kaldır
+	Hide Quick Access Toolbar	Hızlı Erişim Araç Çubuğunu Gizle
+	Show Quick Access Toolbar	Hızlı Erişim Araç Çubuğunu Göster
 	Customize the Ribbon…	Şeridi Özelleştir…
 	Customize Quick Access Toolbar…	Hızlı Erişim Araç Çubuğunu Özelleştir…
 	More Commands…	Diğer Komutlar…
@@ -2087,6 +2096,8 @@ preview	Title	Örnek
 	Math AutoCorrect	Matematik Otomatik Düzelt
 	More >>	Daha fazla >>
 	Moves	Taşımalar
+	Moved from:	Taşındı (kaynak):
+	Moved to:	Taşındı (hedef):
 	New document	Yeni belge
 	No changes (read only)	Değişiklik yok (salt okunur)
 	Only allow this kind of editing:	Yalnızca bu tür düzenlemeye izin ver:
@@ -2186,6 +2197,7 @@ preview	Title	Örnek
 	{name} already exists. Choose Save again to replace it.	{name} zaten var. Değiştirmek için Kaydet'i yeniden seçin.
 	This folder can't be read: {error}	Bu klasör okunamıyor: {error}
 	Showing the first {count} items.	İlk {count} öğe gösteriliyor.
+	No items to show.	Gösterilecek öğe yok.
 	File name:	Dosya adı:
 	Browse in WordCraft…	WordCraft'ta Gözat…
 	Open a file with WordCraft's own browser when the system file dialog doesn't appear.	Sistemin dosya iletişim kutusu açılmadığında dosyayı WordCraft'ın kendi dosya tarayıcısıyla açın.
@@ -2379,6 +2391,7 @@ preview	Title	Örnek
 	Hyphenation zone:	Heceleme bölgesi:
 	Italian	İtalyanca
 	Croatian	Hırvatça
+	Indonesian	Endonezyaca
 	Japanese	Japonca
 	Korean	Korece
 	Limit consecutive hyphens to:	Ardışık tireleri şununla sınırla:
@@ -2510,6 +2523,10 @@ preview	Title	Örnek
 	Contains	İçerir
 	Does not contain	İçermez
 	{count} of {total} recipients will be merged.	Birleştirilecek alıcılar: {count} / {total}.
+	Find in list:	Listede bul:
+	Any field	Herhangi bir alan
+	Matches: {count}	Eşleşme: {count}
+	Show only records that will be merged	Yalnızca birleştirilecek kayıtları göster
 	Take the last match on the page	Sayfadaki son eşleşmeyi al
 	Show its list number	Liste numarasını göster
 	Show its number relative to this field	Numarasını bu alana göre göster
@@ -2629,3 +2646,53 @@ preview	Title	Örnek
 # Reading Mode column widths (#1040)
 	Narrow	Dar
 	Medium	Orta
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	Bölmeden önce hücreleri birleştir
+	Table size	Tablo boyutu
+	AutoFit behavior	Otomatik sığdırma
+	Initial column width:	Başlangıç sütun genişliği:
+	AutoFit to contents	İçeriğe sığdır
+	AutoFit to window	Pencereye sığdır
+	Separate text at	Metni ayırma yeri
+	Commas	Virgüller
+	Other:	Diğer:
+	The number must be between 1 and {max}.	Sayı 1 ile {max} arasında olmalıdır.
+	The measurement must be between {min} and {max}.	Ölçü {min} ile {max} arasında olmalıdır.
+	Recently Used Fonts	Son Kullanılan Yazı Tipleri
+	All Fonts	Tüm Yazı Tipleri
+	Spike	Biriktirici
+	Insert Spike	Biriktiriciyi Ekle
+# Add Font status (#1789)
+	Added 1 font	1 yazı tipi eklendi
+	Added {n} fonts	{n} yazı tipi eklendi
+	{added}; {count} couldn't be read: {names}	{added}; {count} okunamadı: {names}
+	{names} and {n} more	{names} ve {n} tane daha
+	{added}; {n} skipped (limit {max})	{added}; {n} atlandı (sınır {max})
+	nothing is selected	hiçbir şey seçili değil
+	select a picture or shape first	önce bir resim veya şekil seçin
+	select recipients first	önce alıcıları seçin
+	select two or more pictures or shapes first (Shift+click)	iki veya daha fazla resim ya da şekil seçin (Shift+tıklama)
+	text boxes can't go inside a text box	metin kutuları bir metin kutusunun içine konamaz
+	the cursor isn't in a table	imleç bir tabloda değil
+	{name} options	{name} seçenekleri
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	Metin içinde
+	In margin	Kenar boşluğunda
+	Drop Cap Options…	Büyük başlangıç harfi seçenekleri…
+	Lines to drop:	Kaplayacağı satır:
+	Distance from text:	Metinden uzaklık:
+	Distance from text	Metinden uzaklık
+
+# Drop Cap disabled reasons (#2601)
+	the paragraph is empty	paragraf boş
+	the paragraph starts with a space	paragraf boşlukla başlıyor
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	En boy oranını kilitle
+	Relative to original picture size	Özgün resim boyutuna göre
+	Original size	Özgün boyut
+	{width} × {height} pixels	{width} × {height} piksel
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	Herhangi bir birimde bir boyut yazın, örneğin 5 cm veya 300 px. Diğer kenar da buna uyar, böylece resim oranlarını korur.
+
+	Import…	İçe aktar…

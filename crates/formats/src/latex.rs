@@ -2377,7 +2377,7 @@ impl<'a> Parser<'a> {
         let level = self.lists.len().saturating_sub(1).min(8) as u8;
         self.para = Para::default();
         if let Some(&ordered) = self.lists.last() {
-            self.para.list = Some(ListInfo { ordered, level });
+            self.para.list = Some(ListInfo { ordered, level, start: 1 });
         }
         let label = self.opt_arg();
         if let Some(l) = label {
@@ -2528,7 +2528,7 @@ fn raw_text(toks: &[Tok]) -> String {
     for t in toks {
         match t {
             Tok::Text(x) => s.push_str(x),
-            Tok::Tie => s.push(' '),
+            Tok::Tie => s.push('~'),
             Tok::Cmd(c) => match text_symbol(c) {
                 Some(sym) => s.push_str(sym),
                 None if c == "\\" => s.push(' '),
@@ -2896,8 +2896,8 @@ Caf\'e na\"ive \c{c}a \v{s}\'{e} and {\bfseries grouped bold} after.
         assert_eq!(find("On Sample Documents").kind, Kind::Title);
         assert_eq!(find("Introduction").kind, Kind::Heading(1));
         assert_eq!(find("Lists").kind, Kind::Heading(2));
-        assert_eq!(find("First").list, Some(ListInfo { ordered: false, level: 0 }));
-        assert_eq!(find("Nested one").list, Some(ListInfo { ordered: true, level: 1 }));
+        assert_eq!(find("First").list, Some(ListInfo { ordered: false, level: 0, start: 1 }));
+        assert_eq!(find("Nested one").list, Some(ListInfo { ordered: true, level: 1, start: 1 }));
         assert!(ps.iter().any(|p| p.text().trim() == "b) Nested two" && p.list.is_some()), "{:?}", texts(ARTICLE));
         assert_eq!(find("Quoted text.").kind, Kind::Quote);
         assert_eq!(find("Centered.").align, Some(Align::Center));
@@ -3074,5 +3074,23 @@ Caf\'e na\"ive \c{c}a \v{s}\'{e} and {\bfseries grouped bold} after.
         let FBlock::Table(bt) = &back.blocks[0] else { panic!() };
         assert_eq!(bt.widths, vec![100.0, 200.0]);
         assert_eq!(bt.rows[1][0].colspan, 2);
+    }
+
+    #[test]
+    fn urls_preserve_tildes() {
+        let tex = r"\href{https://example.com/~user/page}{Homepage} and \url{https://example.com/~user/page}";
+        let flow = parse(tex);
+        let FBlock::Para(p) = &flow.blocks[0] else { panic!() };
+        assert_eq!(
+            p.inlines[0],
+            Inline::Text("Homepage".to_string(), Fmt { link: Some("https://example.com/~user/page".to_string()), ..Default::default() })
+        );
+        assert_eq!(
+            p.inlines[2],
+            Inline::Text(
+                "https://example.com/~user/page".to_string(),
+                Fmt { link: Some("https://example.com/~user/page".to_string()), ..Default::default() }
+            )
+        );
     }
 }

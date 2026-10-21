@@ -226,7 +226,16 @@ fn apply_filter(s: &mut Session) {
     if m.rows.is_empty() {
         m.preview = false;
     }
-    refresh(s);
+    refresh_shown(s);
+}
+
+/// [`refresh`] for the non-mutating recipient-list commands: in a protected document the merge
+/// fields' shown results stay as they are, since these commands skip the protection checks and
+/// undo (Preview Results and the record buttons, which mutate, show the new list's values).
+fn refresh_shown(s: &mut Session) {
+    if !super::protect::enforced(&s.doc) {
+        refresh(s);
+    }
 }
 
 /// The canonical field name for `f` (any case), or a params error.
@@ -338,7 +347,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("mailings.editRecipients", "Edit Recipient List", "Mailings › Start Mail Merge", |s, v| {
             if v.get("rows").and_then(Value::as_array).is_some() {
                 // Edited records keep the list's filter and sort (rules on removed fields drop).
-                let (filter, sort) = (std::mem::take(&mut s.merge.filter), std::mem::take(&mut s.merge.sort));
+                // Copies, so a list that fails to load leaves the filter and sort as they were.
+                let (filter, sort) = (s.merge.filter.clone(), s.merge.sort.clone());
                 let r = recipients(s, &json!({"rows": v.get("rows"), "fields": v.get("fields")}))?;
                 s.merge.filter = filter;
                 s.merge.sort = sort;
@@ -604,11 +614,21 @@ fn recipients(s: &mut Session, v: &Value) -> CmdResult {
             let named = ext.as_deref().is_some_and(wordcraft_formats::sheet::is_extension);
             let text = wordcraft_formats::txt::is_text(&bytes);
             let spreadsheet = wordcraft_formats::sheet::detect(&bytes).is_some() || (named && !text);
-            if named && !spreadsheet && decode(&bytes, v)?.trim_start().starts_with('<') {
-                return Err(CmdError::Failed(
-                    "this spreadsheet file is a web page (HTML), not a workbook; open it in a spreadsheet program, save it as .xlsx or .csv and select it again"
-                        .into(),
-                ));
+            if named && !spreadsheet {
+                let text = decode(&bytes, v)?;
+                let text = text.trim_start().trim_start_matches('\u{feff}');
+                if text.starts_with("<?xml") {
+                    return Err(CmdError::Failed(
+                        "this spreadsheet file is an XML spreadsheet, not a workbook; open it in a spreadsheet program, save it as .xlsx or .csv and select it again"
+                            .into(),
+                    ));
+                }
+                if text.starts_with('<') {
+                    return Err(CmdError::Failed(
+                        "this spreadsheet file is a web page (HTML), not a workbook; open it in a spreadsheet program, save it as .xlsx or .csv and select it again"
+                            .into(),
+                    ));
+                }
             }
             if spreadsheet {
                 use wordcraft_formats::sheet::{Pick, read_rows, sheet_names};
@@ -647,7 +667,7 @@ fn recipients(s: &mut Session, v: &Value) -> CmdResult {
     s.merge.filter.clear();
     s.merge.sort.clear();
     s.merge.record = 0;
-    refresh(s);
+    refresh_shown(s);
     let mut r = json!({"fields": s.merge.headers, "records": s.merge.rows.len()});
     if !sheet.is_null() {
         r["sheet"] = sheet;
@@ -1703,6 +1723,10 @@ mod tests {
         assert_eq!(r["fields"], json!(["Name", "City"]));
         let e = s.run("mailings.recipients", &json!({"path": "export.xls", "data": b64(b"<html><table><tr><td>x</td></tr></table></html>")}));
         assert!(matches!(e, Err(CmdError::Failed(m)) if m.contains("web page")));
+        // #1287: an Excel 2003 XML spreadsheet named .xls says what it is.
+        let xml = b"<?xml version=\"1.0\"?>\n<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"></Workbook>";
+        let e = s.run("mailings.recipients", &json!({"path": "export.xls", "data": b64(xml)}));
+        assert!(matches!(e, Err(CmdError::Failed(m)) if m.contains("XML spreadsheet")));
         assert!(
             s.run("mailings.recipients", &json!({"path": "junk.xls", "data": b64(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 1])})).is_err()
         );
@@ -1809,6 +1833,21 @@ mod tests {
         s.run("mailings.editRecipients", &json!({"fields": ["Name"], "rows": [["X"], ["Y"]]})).unwrap();
         assert!(s.merge.filter.is_empty());
         assert_eq!(names(&s), ["X", "Y"]);
+    }
+
+    /// #1287: an Edit Recipient List that fails to load keeps the list's filter and sort.
+    #[test]
+    fn failed_edit_recipients_keeps_filter_and_sort() {
+        let mut s = people();
+        s.run("mailings.filterRecipients", &json!({"rules": [{"field": "Age", "op": "greater", "value": 20}], "sort": [{"field": "City"}]})).unwrap();
+        let before = names(&s);
+        // Array rows without `fields` fail to load.
+        let e = s.run("mailings.editRecipients", &json!({"rows": [["X", "Y"]]}));
+        assert!(matches!(e, Err(CmdError::Params(_))));
+        assert_eq!(s.merge.filter.len(), 1);
+        assert_eq!(s.merge.sort.len(), 1);
+        assert_eq!(names(&s), before);
+        assert_eq!(s.run("mailings.editRecipients", &json!({})).unwrap()["rules"].as_array().map(Vec::len), Some(1));
     }
 
     /// Review fix for #885: sorting a column that mixes numbers and text is a total order

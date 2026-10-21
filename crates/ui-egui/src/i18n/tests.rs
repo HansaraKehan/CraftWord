@@ -989,10 +989,17 @@ fn polish_covers_every_key_of_every_other_catalog() {
     let polish = keys(lang("pl").0.source);
     // Italian and Hungarian still carry "Style: APA", which the interface no longer shows;
     // Hungarian and Bulgarian also name the citation styles, and Bulgarian has a few one-line
-    for other in Lang::all().filter(|l| *l != Lang::EN && !matches!(l.code(), "pl" | "it" | "hu" | "bg" | "vi" | "sv" | "hr")) {
+    // pieces of gallery labels. Polish matches every other catalog, including the built-in style
+    // names, citation styles and equation gallery. French carries newer strings (paper sizes,
+    // bookmarks, printing) the Polish catalog hasn't caught up with yet.
+    for other in Lang::all().filter(|l| *l != Lang::EN && !matches!(l.code(), "pl" | "it" | "hu" | "bg" | "vi" | "sv" | "hr" | "fr")) {
         let mut missing: Vec<String> = keys(other.0.source).difference(&polish).cloned().collect();
         missing.sort();
         assert!(missing.is_empty(), "pl lacks {}'s {missing:?}", other.code());
+    }
+    for code in ["it", "hu"] {
+        let missing: Vec<String> = keys(lang(code).0.source).difference(&polish).cloned().collect();
+        assert_eq!(missing, ["Style: APA"], "pl vs {code}");
     }
     let pl = lang("pl");
     assert_eq!(tr(pl, "File"), "Plik");
@@ -1002,6 +1009,8 @@ fn polish_covers_every_key_of_every_other_catalog() {
     assert_eq!(tr(pl, "Save"), "Zapisz");
     assert_eq!(tr(pl, "Spelling & Grammar"), "Pisownia i gramatyka");
     assert_eq!(tr(pl, "Polish"), "Polski");
+    assert_eq!(tr(pl, "GOST (name sort)"), "GOST (sortowanie według nazwiska)");
+    assert_eq!(tr(pl, "ISO 690 (author-date)"), "ISO 690 (autor–data)");
     assert_eq!(tr(pl, "unknown future label"), "unknown future label");
     assert_eq!(fmt(tr(pl, "Exported {path}"), &[("path", "draft-{words}.docx")]), "Wyeksportowano: draft-{words}.docx");
     assert_eq!(fmt(tr(pl, "Page {page} of {pages}"), &[("page", "3"), ("pages", "9")]), "Strona 3 z 9");

@@ -177,6 +177,74 @@ fn enter_on_an_empty_nested_item_moves_it_up_a_level_first() {
     assert_eq!(paras(&s), vec![para("A", Some(0)), para("B", Some(1)), para("text", None)]);
 }
 
+/// #2143: in a Word file whose list comes from the paragraph styles (List Number, List Number 2
+/// with `w:numPr` in styles.xml, none on the paragraphs), Enter on an empty nested item moves it
+/// up a level and then ends the list, as with direct numbering.
+#[test]
+fn enter_on_an_empty_item_numbered_by_its_style_moves_it_up_a_level() {
+    use std::io::Write;
+    let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+    let style = |id: &str, name: &str, ilvl: u8| {
+        format!(
+            r#"<w:style w:type="paragraph" w:styleId="{id}"><w:name w:val="{name}"/><w:pPr><w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="1"/></w:numPr></w:pPr></w:style>"#
+        )
+    };
+    let styles = format!(
+        r#"<w:styles {w}><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>{}{}</w:styles>"#,
+        style("ListNumber", "List Number", 0),
+        style("ListNumber2", "List Number 2", 1)
+    );
+    let numbering = format!(
+        r#"<w:numbering {w}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2."/><w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#
+    );
+    let p = |st: &str, text: &str| format!(r#"<w:p><w:pPr><w:pStyle w:val="{st}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#);
+    let body: String =
+        [p("ListNumber", "Lorem"), p("ListNumber", "Ipsum"), p("ListNumber2", "Latin"), p("ListNumber2", "Nonsense"), p("ListNumber2", "")].concat();
+    let document = format!(r#"<w:document {w}><w:body>{body}</w:body></w:document>"#);
+    let rel = |id: &str, kind: &str, target: &str| {
+        format!(r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}" Target="{target}"/>"#)
+    };
+    let rels_ns = r#"xmlns="http://schemas.openxmlformats.org/package/2006/relationships""#;
+    let main = format!("<Relationships {rels_ns}>{}</Relationships>", rel("rId1", "officeDocument", "word/document.xml"));
+    let doc_rels =
+        format!("<Relationships {rels_ns}>{}{}</Relationships>", rel("rId1", "styles", "styles.xml"), rel("rId2", "numbering", "numbering.xml"));
+    let ct = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>"#;
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default();
+    for (name, data) in [
+        ("[Content_Types].xml", ct),
+        ("_rels/.rels", main.as_str()),
+        ("word/_rels/document.xml.rels", doc_rels.as_str()),
+        ("word/document.xml", document.as_str()),
+        ("word/styles.xml", styles.as_str()),
+        ("word/numbering.xml", numbering.as_str()),
+    ] {
+        z.start_file(name, o).unwrap();
+        z.write_all(data.as_bytes()).unwrap();
+    }
+    let doc = crate::io::open_bytes("t.docx", &z.finish().unwrap().into_inner()).unwrap();
+    let mut s = Session::new(doc);
+    // The list level each paragraph shows, wherever its numbering comes from.
+    let levels = |s: &Session| -> Vec<Option<u8>> {
+        s.doc
+            .body
+            .iter()
+            .filter_map(|b| b.as_para())
+            .map(|p| s.doc.styles.resolve_para(&p.props).numbering.filter(|n| n.num != 0).map(|n| n.level))
+            .collect()
+    };
+    assert_eq!(levels(&s), [Some(0), Some(0), Some(1), Some(1), Some(1)]);
+    s.sel = crate::Selection::caret(Pos::body(4, 0));
+    typ(&mut s, "\n");
+    assert_eq!(levels(&s), [Some(0), Some(0), Some(1), Some(1), Some(0)]);
+    assert_eq!(s.sel.focus, Pos::body(4, 0));
+    typ(&mut s, "\n");
+    assert_eq!(levels(&s), [Some(0), Some(0), Some(1), Some(1), None]);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(levels(&s), [Some(0), Some(0), Some(1), Some(1), Some(1)]);
+}
+
 #[test]
 fn shift_tab_and_tab_change_list_levels() {
     let mut s = typed("1. One\nTwo\n\tSub a\nSub b\n");
@@ -276,6 +344,51 @@ fn autocorrect_as_you_type() {
     assert_eq!(s.doc.plain_text(StoryRef::Body), "½ cup. iPhone. See readme.txt ");
 }
 
+#[test]
+fn smart_quotes_nested_and_opening_delimiters() {
+    let s = typed("\"'nested'\" '\"inner\"' (\"'parens'\")");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "“‘nested’” ‘“inner”’ (“‘parens’”)");
+    // Empty quotes preserve open then close
+    let s = typed("\"\" ''");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "“” ‘’");
+    // After opening guillemets and low quotes
+    let s = typed("«'french'» „'german'“");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "«‘french’» „‘german’“");
+}
+
+/// #2223: the double-hyphen arrow is a replacement, not the existing arrow bullet.
+#[test]
+fn double_hyphen_arrow_autocorrect_preserves_typing_scope_and_undo() {
+    let mut s = typed("go --> ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Go → ");
+    assert_eq!(paras(&s)[0].1, None);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Go --> ");
+    let s = typed("go --> here");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Go → here");
+    let s = typed("--> ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "→ ");
+    assert_eq!(paras(&s)[0].1, None);
+}
+
+#[test]
+fn double_hyphen_arrow_respects_autocorrect_preferences() {
+    for prefs in [json!({"enabled": false}), json!({"replaceText": false}), json!({"delete": "-->"})] {
+        let mut s = s();
+        run(&mut s, "tools.autocorrect", prefs);
+        typ(&mut s, "go --> here");
+        assert!(s.doc.plain_text(StoryRef::Body).ends_with(" --> here"));
+    }
+    let mut s = s();
+    run(&mut s, "review.language", json!({"lang": "pl-PL", "default": true}));
+    typ(&mut s, "go --> here");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Go → here");
+    let mut s = self::s();
+    run(&mut s, "tools.autocorrect", json!({"add": {"from": "-->", "to": "custom"}}));
+    typ(&mut s, "go --> here");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Go custom here");
+}
+
 /// #835: the English replacement list applies only to English text. Polish "i" ("and") stays
 /// lowercase; symbols still change; English and untagged text still get "I".
 #[test]
@@ -369,6 +482,55 @@ fn web_addresses_become_links() {
 fn dashes() {
     let s = typed("a -- b and c - d and e--f and café--g ");
     assert_eq!(s.doc.plain_text(StoryRef::Body), "A – b and c – d and e—f and café—g ");
+}
+
+/// #2036: a dash AutoFormat makes right after a symbol is text, not the symbol's font.
+#[test]
+fn a_dash_after_a_symbol_is_not_in_the_symbol_font() {
+    let mut s = s();
+    typ(&mut s, "e");
+    run(&mut s, "insert.symbol", json!({"char": "\u{F0FC}", "font": "Wingdings"}));
+    typ(&mut s, "--f ");
+    let p = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+    let dash = p.text.find('\u{2014}').expect("em dash");
+    assert_eq!(p.props_of_char(dash).sym_font, None);
+}
+
+/// #2036: the en dashes of "x -- y" and "x - y" after a symbol (and its symbol-font space) are
+/// text, not the symbol's font.
+#[test]
+fn en_dashes_after_a_symbol_are_not_in_the_symbol_font() {
+    for keys in ["-- f ", "- f "] {
+        let mut s = s();
+        typ(&mut s, "e");
+        run(&mut s, "insert.symbol", json!({"char": "\u{F0FC} ", "font": "Wingdings"}));
+        typ(&mut s, keys);
+        let p = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+        let dash = p.text.find('\u{2013}').unwrap_or_else(|| panic!("en dash for {keys:?}: {:?}", p.text));
+        assert_eq!(p.props_of_char(dash).sym_font, None, "{keys:?}");
+    }
+}
+
+/// #2036: an AutoCorrect replacement of a word that starts with a symbol-font character is text.
+#[test]
+fn an_autocorrect_replacement_of_a_symbol_word_is_not_in_the_symbol_font() {
+    let mut s = s();
+    run(&mut s, "insert.symbol", json!({"char": "(", "font": "Symbol"}));
+    typ(&mut s, "c) ");
+    let p = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+    let c = p.text.find('\u{A9}').unwrap_or_else(|| panic!("(c) → ©: {:?}", p.text));
+    assert_eq!(p.props_of_char(c).sym_font, None);
+}
+
+/// #2036: a letter AutoCorrect capitalises after a symbol-font character is text, not the symbol's font.
+#[test]
+fn a_capitalised_word_after_a_symbol_is_not_in_the_symbol_font() {
+    let mut s = s();
+    run(&mut s, "insert.symbol", json!({"char": "m", "font": "Wingdings"}));
+    typ(&mut s, "onday ");
+    let p = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+    let m = p.text.find('M').unwrap_or_else(|| panic!("monday → Monday: {:?}", p.text));
+    assert_eq!(p.props_of_char(m).sym_font, None);
 }
 
 #[test]
@@ -1028,17 +1190,76 @@ fn reject_all_takes_out_the_paragraph_breaks_a_tracked_paste_inserted() {
 fn plain_text_paste_keeps_an_empty_paragraph_in_a_list() {
     // Issue #422: the pasted paragraph separators went through Enter, which ends the list on an
     // empty item, so `A\n\nB` lost its empty paragraph.
-    for (id, v) in [("edit.pasteText", json!({"text": "A\n\nB"})), ("edit.pasteSpecial", json!({"as": "text", "text": "A\n\nB"}))] {
+    // Paste of plain text from another program goes the same way.
+    for (id, v) in [
+        ("edit.pasteText", json!({"text": "A\n\nB"})),
+        ("edit.pasteSpecial", json!({"as": "text", "text": "A\n\nB"})),
+        ("edit.paste", json!({"text": "A\n\nB"})),
+    ] {
         let mut s = s();
         run(&mut s, "para.bullets", json!({}));
         run(&mut s, id, v);
-        assert_eq!(texts(&s), ["a", "", "b"], "{id}");
+        assert_eq!(paras(&s), vec![para("A", Some(0)), para("", Some(0)), para("B", Some(0))], "{id}");
     }
     // Enter twice still ends the list.
     let mut s = s();
     run(&mut s, "para.bullets", json!({}));
     typ(&mut s, "A\n\nB");
     assert_eq!(paras(&s), vec![para("A", Some(0)), para("B", None)]);
+}
+
+/// Each body paragraph's text and paragraph formatting.
+fn para_formats(s: &Session) -> Vec<(String, wordcraft_doc::props::ParaProps)> {
+    s.doc.body.iter().filter_map(|b| b.as_para()).map(|p| (p.text.clone(), p.props.clone())).collect()
+}
+
+/// Plain text from another program pastes as Keep Text Only does, as in Word: every pasted line
+/// becomes a paragraph formatted like the paragraph it lands in. Paste gave the lines after the
+/// first default formatting, and the text after the caret went with the last line, so a
+/// right-to-left paragraph came out left-to-right from its second line on.
+#[test]
+fn plain_text_paste_gives_every_line_the_formatting_of_its_paragraph() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "بداية نهاية", "raw": true}));
+    run(&mut s, "para.rtl", json!({}));
+    run(&mut s, "para.indents", json!({"left": 18, "right": 36}));
+    run(&mut s, "para.spacing", json!({"after": 12}));
+    let before = para_formats(&s);
+    let [(_, props)] = &before[..] else { panic!("{before:?}") };
+    assert_eq!(props.bidi, Some(true));
+    let off = "بداية ".len();
+    for id in ["edit.paste", "edit.pasteText"] {
+        run(&mut s, "caret.set", json!({"pos": {"block": 0, "off": off}}));
+        run(&mut s, id, json!({"text": "سطر أول\r\nسطر ثان\r\nسطر ثالث"}));
+        let want: Vec<(String, _)> = ["بداية سطر أول", "سطر ثان", "سطر ثالثنهاية"].iter().map(|t| (t.to_string(), props.clone())).collect();
+        assert_eq!(para_formats(&s), want, "{id}");
+        // One undo step takes the whole paste out again.
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(para_formats(&s), before, "{id}");
+    }
+}
+
+/// Empty lines in pasted plain text come through as empty paragraphs, formatted like the rest,
+/// and so does a line break at the end of the text. The text takes the formatting before the
+/// caret.
+#[test]
+fn plain_text_paste_keeps_empty_lines_as_paragraphs() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Lead ", "raw": true}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "format.bold", json!({}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "para.alignCenter", json!({}));
+    run(&mut s, "para.spacing", json!({"before": 6, "after": 18}));
+    let props = para_formats(&s)[0].1.clone();
+    run(&mut s, "edit.paste", json!({"text": "Alpha one.\n\nAlpha two.\n\n\nAlpha three.\n"}));
+    let got = para_formats(&s);
+    let texts: Vec<&str> = got.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["Lead Alpha one.", "", "Alpha two.", "", "", "Alpha three.", ""]);
+    assert!(got.iter().all(|(_, p)| *p == props), "{got:?}");
+    assert_eq!(s.sel.focus, Pos::body(6, 0), "the caret ends after the pasted text");
+    let bold = s.doc.body.iter().filter_map(|b| b.as_para()).all(|p| p.runs.iter().all(|r| r.props.bold == Some(true)));
+    assert!(bold, "the pasted text takes the bold before the caret");
 }
 
 /// #713: Arabic or Hebrew typed into an empty paragraph makes it right-to-left; a paragraph that
@@ -1139,4 +1360,803 @@ fn typing_after_a_citation_goes_outside_its_field() {
     assert_eq!(f.len(), 1);
     let inside = Pos { off: f[0].start.off + wordcraft_doc::para::OBJ.len_utf8(), ..f[0].start.clone() };
     assert_eq!(s.doc.copy_range(&inside, &f[0].end).plain_text(), "(Smith 2020)");
+}
+
+/// Tab in a table typed in right-to-left text (#2634): like Word, a table inserted in a
+/// right-to-left paragraph is a right-to-left table, so its first cell stands at the right and
+/// Tab moves to the cell on the left (the next one in reading order); Shift+Tab comes back. A
+/// table inserted in a left-to-right paragraph is unchanged: Tab moves right.
+#[test]
+fn tab_in_a_table_inserted_in_right_to_left_text_moves_left() {
+    // The caret's cell column and the x of that cell on the page.
+    fn caret_cell_x(s: &mut Session) -> (usize, f32) {
+        let (_, r, c) = s.sel.focus.path.cell().expect("caret in a cell");
+        let x = s
+            .layout()
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .find_map(|it| match it {
+                wordcraft_layout::Placed::Cell { rect, row, cell, covered: false, .. } if *row == r && *cell == c => Some(rect.x),
+                _ => None,
+            })
+            .expect("cell laid out");
+        (c, x)
+    }
+    for (keys, rtl) in [("مرحبا\n", true), ("Hello\n", false)] {
+        let mut s = s();
+        typ(&mut s, keys);
+        run(&mut s, "insert.table", json!({"rows": 1, "cols": 3}));
+        let t = s.doc.body.iter().find_map(|b| b.as_table()).expect("table");
+        assert_eq!(t.props.bidi_visual, rtl, "{keys:?}: the table takes the paragraph's direction");
+        let (c0, x0) = caret_cell_x(&mut s);
+        typ(&mut s, "\t");
+        let (c1, x1) = caret_cell_x(&mut s);
+        assert_eq!((c0, c1), (0, 1), "{keys:?}: Tab goes to the next cell in reading order");
+        assert_eq!(x1 < x0, rtl, "{keys:?}: Tab moves {} ({x0} -> {x1})", if rtl { "left" } else { "right" });
+        run(&mut s, "text.backTab", json!({}));
+        assert_eq!(caret_cell_x(&mut s), (0, x0), "{keys:?}: Shift+Tab comes back");
+    }
+}
+
+/// A .docx of two paragraphs in two sections, as Word writes it: the first section's properties
+/// in the first paragraph's mark (portrait), the last section's in the body (landscape, starting
+/// as `kind`).
+fn two_section_docx(kind: &str) -> Vec<u8> {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let files = [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_string(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_string(),
+        ),
+        (
+            "word/document.xml",
+            format!(
+                r#"<w:document xmlns:w="{W}"><w:body><w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:pPr><w:r><w:t>One.</w:t></w:r></w:p><w:p><w:r><w:t>Two.</w:t></w:r></w:p><w:sectPr><w:type w:val="{kind}"/><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/></w:sectPr></w:body></w:document>"#
+            ),
+        ),
+    ];
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, data) in files {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, data.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// #2127: Backspace just after a section break, or Delete just before it, removes the break, as
+/// in Word: the two paragraphs join, the text before the break takes the following section's
+/// page setup, and Undo brings the break back. Imported breaks and ones made here alike.
+#[test]
+fn backspace_and_delete_remove_a_section_break() {
+    let made_here = || {
+        let mut s = typed("One.Two.");
+        s.sel = crate::Selection::caret(Pos::body(0, 4));
+        run(&mut s, "layout.break", json!({"kind": "nextPage"}));
+        s
+    };
+    for source in ["nextPage", "continuous", "made here"] {
+        for (key, caret) in [("text.backspace", Pos::body(1, 0)), ("text.delete", Pos::body(0, 4))] {
+            let mut s = match source {
+                "made here" => made_here(),
+                kind => Session::new(crate::io::open_bytes("s.docx", &two_section_docx(kind)).unwrap()),
+            };
+            assert_eq!(s.doc.sections().len(), 2, "{source}");
+            assert_eq!(s.doc.plain_text(StoryRef::Body), "One.\nTwo.", "{source}");
+            let after = s.doc.sections().last().map(|(_, sp)| (**sp).clone()).unwrap();
+            s.sel = crate::Selection::caret(caret);
+            run(&mut s, key, json!({}));
+            assert_eq!(s.doc.plain_text(StoryRef::Body), "One.Two.", "{source} {key}");
+            let sections = s.doc.sections();
+            assert_eq!(sections.len(), 1, "{source} {key}: the break is gone");
+            assert_eq!(*sections[0].1, after, "{source} {key}: the following section's setup");
+            run(&mut s, "edit.undo", json!({}));
+            assert_eq!(s.doc.plain_text(StoryRef::Body), "One.\nTwo.", "{source} {key}: undo");
+            assert_eq!(s.doc.sections().len(), 2, "{source} {key}: undo brings the break back");
+        }
+    }
+}
+
+/// A .docx laid out like the one attached to #2127: a continuous section break, with the
+/// document's only header, on the mark of an empty paragraph after "One.", and the last
+/// section (nextPage, no header of its own, so linked to the previous one) in the body.
+/// `then` adds a paragraph after the break; without it the break is on the last paragraph and
+/// the last section has none.
+fn break_on_the_last_paragraph_docx(then: Option<&str>) -> Vec<u8> {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let then = then.map(|t| format!("<w:p><w:r><w:t>{t}</w:t></w:r></w:p>")).unwrap_or_default();
+    let files = [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>"#.to_string(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_string(),
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#.to_string(),
+        ),
+        ("word/header1.xml", format!(r#"<w:hdr xmlns:w="{W}"><w:p><w:r><w:t>Lab report</w:t></w:r></w:p></w:hdr>"#)),
+        (
+            "word/document.xml",
+            format!(
+                r#"<w:document xmlns:w="{W}" xmlns:r="{R}"><w:body><w:p><w:r><w:t>One.</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId2"/><w:type w:val="continuous"/><w:pgSz w:w="11920" w:h="16850"/><w:pgMar w:top="1320" w:right="1275" w:bottom="280" w:left="1417" w:header="480" w:footer="0" w:gutter="0"/></w:sectPr></w:pPr></w:p>{then}<w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="11920" w:h="16850"/><w:pgMar w:top="1320" w:right="1275" w:bottom="280" w:left="1417" w:header="480" w:footer="0" w:gutter="0"/></w:sectPr></w:body></w:document>"#
+            ),
+        ),
+    ];
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, data) in files {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, data.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// #2127: Delete at the end of the last paragraph removes a section break on its mark too,
+/// though there's no paragraph after it to join. The text takes the last section's setup, and
+/// the header the last section showed by linking to the removed one stays. Removing the break
+/// by joining two paragraphs keeps that header as well. Undo brings the break back.
+#[test]
+fn delete_removes_a_section_break_on_the_last_paragraph() {
+    for then in [None, Some("Two.")] {
+        let mut s = Session::new(crate::io::open_bytes("s.docx", &break_on_the_last_paragraph_docx(then)).unwrap());
+        let sections = s.doc.sections();
+        assert_eq!(sections.len(), 2, "{then:?}");
+        let header = sections[0].1.headers.default;
+        assert!(header.is_some() && sections[1].1.headers.default.is_none(), "{then:?}: the header is on the break's section");
+        let mut after = sections[1].1.clone();
+        after.headers.default = header;
+        s.sel = crate::Selection::caret(Pos::body(1, 0));
+        run(&mut s, "text.delete", json!({}));
+        let text = if then.is_some() { "One.\nTwo." } else { "One.\n" };
+        assert_eq!(s.doc.plain_text(StoryRef::Body), text, "{then:?}");
+        let sections = s.doc.sections();
+        assert_eq!(sections.len(), 1, "{then:?}: the break is gone");
+        assert_eq!(*sections[0].1, after, "{then:?}: the last section's setup, with the header");
+        run(&mut s, "edit.undo", json!({}));
+        let sections = s.doc.sections();
+        assert_eq!(sections.len(), 2, "{then:?}: undo brings the break back");
+        assert_eq!((sections[0].1.headers.default, sections[1].1.headers.default), (header, None), "{then:?}: undo");
+    }
+}
+
+fn first_letter_list(s: &Session) -> Vec<String> {
+    s.prefs.autocorrect.exceptions.clone()
+}
+
+/// Undoing an automatic sentence capital adds the word before it to the First Letter exceptions
+/// (Word: "Automatically add words to list", #1857); typing the line again isn't capitalised.
+#[test]
+fn undoing_a_sentence_capital_adds_a_first_letter_exception() {
+    let mut s = typed("hello there. world ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Hello there. World ");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Hello there. world ");
+    assert_eq!(first_letter_list(&s), ["there."]);
+    run(&mut s, "text.newParagraph", json!({}));
+    typ(&mut s, "x there. world ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Hello there. world \nX there. world ");
+}
+
+#[test]
+fn backspacing_a_sentence_capital_and_retyping_adds_a_first_letter_exception() {
+    let mut s = typed("hello there. world ");
+    typ(&mut s, "\u{8}\u{8}\u{8}\u{8}\u{8}\u{8}world ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Hello there. world ");
+    assert_eq!(first_letter_list(&s), ["there."]);
+}
+
+#[test]
+fn automatic_exceptions_can_be_turned_off() {
+    let mut s = typed("");
+    run(&mut s, "tools.autocorrect", json!({"autoAddFirstLetter": false}));
+    typ(&mut s, "hello there. world ");
+    run(&mut s, "edit.undo", json!({}));
+    assert!(first_letter_list(&s).is_empty());
+    let mut s = typed("");
+    run(&mut s, "tools.autocorrect", json!({"autoAddFirstLetter": false}));
+    typ(&mut s, "hello there. world \u{8}\u{8}\u{8}\u{8}\u{8}\u{8}world ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Hello there. World ");
+    assert!(first_letter_list(&s).is_empty());
+}
+
+#[test]
+fn undoing_a_replacement_adds_no_exception() {
+    let mut s = typed("so teh ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "So the ");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "So teh ");
+    assert!(first_letter_list(&s).is_empty());
+    assert!(s.prefs.autocorrect.entries.is_empty() && s.prefs.autocorrect.removed.is_empty());
+    typ(&mut s, "and teh ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "So teh and the ");
+}
+
+/// Checked in Word for Mac: the same rule as First Letter.
+#[test]
+fn undoing_an_initial_caps_fix_adds_an_initial_caps_exception() {
+    let mut s = typed("so TWo ");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.prefs.autocorrect.initial_caps_exceptions, ["TWo"]);
+    typ(&mut s, "and TWo ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "So TWo and TWo ");
+}
+
+#[test]
+fn undoing_other_edits_after_a_capital_adds_no_exception() {
+    // Typing more, then one Undo, and a second Undo that reverses the capital's step later.
+    let mut s = typed("hello there. world more text");
+    run(&mut s, "edit.undo", json!({}));
+    assert!(first_letter_list(&s).is_empty());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(first_letter_list(&s).is_empty(), "only the Undo that reverses the capital itself counts");
+}
+
+#[test]
+fn a_full_undo_history_does_not_match_later_undos() {
+    let mut s = typed("");
+    for _ in 0..300 {
+        typ(&mut s, "x\n");
+    }
+    typ(&mut s, "hello there. world more text\nand more");
+    run(&mut s, "edit.undo", json!({}));
+    assert!(first_letter_list(&s).is_empty());
+}
+
+#[test]
+fn a_new_document_forgets_the_capital() {
+    let mut s = typed("hello there. world ");
+    run(&mut s, "file.new", json!({}));
+    typ(&mut s, "abc\ndef\nghi\njkl");
+    for _ in 0..8 {
+        let _ = s.run("edit.undo", &json!({}));
+    }
+    assert!(first_letter_list(&s).is_empty());
+}
+
+#[test]
+fn an_overlong_word_is_not_added_as_an_exception() {
+    let mut s = typed(&format!("hi {}. world ", "a".repeat(5000)));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(first_letter_list(&s).is_empty());
+}
+
+/// Each body paragraph's laid-out number (`None`: none) and its style.
+fn numbers(s: &mut Session) -> Vec<(Option<String>, String)> {
+    let l = s.layout();
+    let labels: Vec<Option<String>> = l
+        .pages
+        .iter()
+        .flat_map(|p| &p.items)
+        .filter_map(|i| {
+            if let wordcraft_layout::Placed::Lines { para, l0: 0, .. } = i { Some(para.label.as_ref().map(|lb| lb.text.clone())) } else { None }
+        })
+        .collect();
+    let styles = s.doc.body.iter().filter_map(|b| b.as_para()).map(|p| p.props.style.clone().unwrap_or_else(|| "Normal".into()));
+    labels.into_iter().zip(styles).collect()
+}
+
+fn num(label: Option<&str>, style: &str) -> (Option<String>, String) {
+    (label.map(str::to_string), style.to_string())
+}
+
+/// #1793 (Word for Mac, 2026-10-15): after the "1 / 1.1 / 1.1.1" heading list, a new Heading 2
+/// typed after "Three" is numbered 2.1 on its own; the body text after it stays unnumbered.
+#[test]
+fn a_new_heading_after_a_heading_linked_list_is_numbered() {
+    let mut s = s();
+    typ(&mut s, "One");
+    run(&mut s, "para.heading1", json!({}));
+    typ(&mut s, "\nTwo");
+    run(&mut s, "para.heading2", json!({}));
+    typ(&mut s, "\nThree");
+    run(&mut s, "para.heading1", json!({}));
+    // The caret in "Three" (a Heading 1, the list's first level).
+    run(&mut s, "list.multilevelPreset", json!({"preset": "headings"}));
+    run(&mut s, "caret.docEnd", json!({}));
+    typ(&mut s, "\n");
+    run(&mut s, "para.heading2", json!({}));
+    typ(&mut s, "Four\nBody");
+    assert_eq!(
+        numbers(&mut s),
+        [num(Some("1"), "Heading1"), num(Some("1.1"), "Heading2"), num(Some("2"), "Heading1"), num(Some("2.1"), "Heading2"), num(None, "Normal")]
+    );
+}
+
+/// #1793: plain Numbering on a Heading 1 numbers it "1." and keeps Heading 1 (Word: "1. One").
+#[test]
+fn numbering_a_heading_keeps_the_heading_style() {
+    let mut s = s();
+    typ(&mut s, "One");
+    run(&mut s, "para.heading1", json!({}));
+    run(&mut s, "para.numbering", json!({}));
+    assert_eq!(numbers(&mut s), [num(Some("1."), "Heading1")]);
+}
+
+/// #1793: applying a heading style that carries list numbering numbers the paragraph, even one
+/// whose numbering was switched off before.
+#[test]
+fn applying_a_numbered_heading_style_numbers_the_paragraph() {
+    let mut s = s();
+    typ(&mut s, "One");
+    run(&mut s, "para.heading1", json!({}));
+    run(&mut s, "list.multilevelPreset", json!({"preset": "headings"}));
+    typ(&mut s, "\nTwo");
+    run(&mut s, "para.numbering", json!({}));
+    run(&mut s, "para.numbering", json!({"off": true}));
+    assert_eq!(numbers(&mut s)[1].0, None);
+    run(&mut s, "para.heading2", json!({}));
+    assert_eq!(numbers(&mut s), [num(Some("1"), "Heading1"), num(Some("1.1"), "Heading2")]);
+}
+
+/// #1793: "1. " typed at the start of a heading numbers it and keeps the heading style; only
+/// body text becomes List Paragraph.
+#[test]
+fn typing_1_dot_in_a_heading_keeps_the_heading_style() {
+    let mut s = s();
+    run(&mut s, "para.heading1", json!({}));
+    typ(&mut s, "1. One\n");
+    run(&mut s, "para.normal", json!({}));
+    typ(&mut s, "1. Body");
+    assert_eq!(numbers(&mut s), [num(Some("1."), "Heading1"), num(Some("1."), "ListParagraph")]);
+    for (style, keys) in [("Heading2", "a) Part"), ("Subtitle", "1. Item")] {
+        let mut s = self::s();
+        run(&mut s, "para.style", json!({"style": style}));
+        typ(&mut s, keys);
+        let got = numbers(&mut s);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].0.is_some(), "{style}: a list");
+        assert_eq!(got[0].1, style);
+    }
+}
+
+// Backspace and Delete on selected tables, rows and columns (Word for Mac, #1844).
+
+/// "before", a 3×3 table with cells `a1`…`c3` (column letter, row number), "after"; the caret
+/// in the cell at row `r`, column `c`.
+fn table_between(r: u32, c: u32) -> Session {
+    let mut s = typed("before\n");
+    run(&mut s, "insert.table", json!({"rows": 3, "cols": 3}));
+    typ(&mut s, "a1\tb1\tc1\ta2\tb2\tc2\ta3\tb3\tc3");
+    run(&mut s, "caret.docEnd", json!({}));
+    typ(&mut s, "after");
+    let shape: Vec<&str> = s.doc.body.iter().map(|b| if b.as_table().is_some() { "table" } else { "para" }).collect();
+    assert_eq!(shape, ["para", "table", "para"], "setup");
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [1, r, c, 0], "off": 0}}));
+    s
+}
+
+fn tables(s: &Session) -> usize {
+    s.doc.body.iter().filter(|b| b.as_table().is_some()).count()
+}
+
+/// The first top-level table's cells, row by row (tracked deletions included).
+fn table_cells(s: &Session) -> Vec<Vec<String>> {
+    s.doc
+        .body
+        .iter()
+        .find_map(|b| b.as_table())
+        .map(|t| {
+            t.rows
+                .iter()
+                .map(|r| r.cells.iter().map(|c| c.blocks.iter().filter_map(|b| b.as_para()).map(|p| p.plain_text()).collect()).collect())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn backspace_with_the_whole_table_selected_removes_the_table() {
+    let mut s = table_between(1, 1);
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    assert_eq!(tables(&s), 0, "the table stays: {:?}", table_cells(&s));
+    assert_eq!(texts(&s), ["before", "after"]);
+    // The caret is in the paragraph that followed the table.
+    assert_eq!(s.sel.focus, Pos { story: StoryRef::Body, path: wordcraft_doc::Path::top(1), off: 0 });
+    assert!(s.sel.is_collapsed());
+    // One undo brings it back.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(tables(&s), 1);
+    assert_eq!(table_cells(&s), [["a1", "b1", "c1"], ["a2", "b2", "c2"], ["a3", "b3", "c3"]]);
+}
+
+#[test]
+fn delete_with_the_whole_table_selected_clears_the_cells_and_keeps_the_table() {
+    let mut s = table_between(0, 0);
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "text.delete", json!({}));
+    assert_eq!(tables(&s), 1);
+    assert_eq!(table_cells(&s), [["", "", ""], ["", "", ""], ["", "", ""]]);
+    assert_eq!(texts(&s), ["before", "after"]);
+}
+
+#[test]
+fn delete_or_backspace_with_the_table_and_the_paragraph_after_selected_removes_the_table() {
+    for key in ["text.delete", "text.backspace"] {
+        // From the first cell to the end of the document: Word's rule widens it to whole rows.
+        let mut s = table_between(0, 0);
+        run(&mut s, "caret.docEnd", json!({"extend": true}));
+        run(&mut s, key, json!({}));
+        assert_eq!(tables(&s), 0, "{key}: {:?}", table_cells(&s));
+        assert_eq!(texts(&s), ["before", ""], "{key}");
+    }
+}
+
+#[test]
+fn delete_or_backspace_with_the_paragraph_before_and_the_table_selected_removes_the_table() {
+    for key in ["text.delete", "text.backspace"] {
+        // From the start of "before" down into the last row: the rows are taken whole.
+        let mut s = table_between(0, 0);
+        run(&mut s, "caret.docStart", json!({}));
+        for _ in 0..3 {
+            run(&mut s, "caret.down", json!({"extend": true}));
+        }
+        assert_eq!(s.sel.focus.path.cell().map(|(_, r, _)| r), Some(2), "{key}: the selection reaches the last row");
+        run(&mut s, key, json!({}));
+        assert_eq!(tables(&s), 0, "{key}: {:?}", table_cells(&s));
+        assert_eq!(texts(&s), ["after"], "{key}");
+        assert_eq!(s.sel.focus, Pos { story: StoryRef::Body, path: wordcraft_doc::Path::top(0), off: 0 }, "{key}");
+    }
+}
+
+#[test]
+fn backspace_deletes_selected_rows_and_delete_clears_them() {
+    let mut s = table_between(1, 0);
+    run(&mut s, "table.selectRow", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    assert_eq!(table_cells(&s), [["a1", "b1", "c1"], ["a3", "b3", "c3"]]);
+
+    let mut s = table_between(1, 0);
+    run(&mut s, "table.selectRow", json!({}));
+    run(&mut s, "text.delete", json!({}));
+    assert_eq!(table_cells(&s), [["a1", "b1", "c1"], ["", "", ""], ["a3", "b3", "c3"]]);
+}
+
+#[test]
+fn backspace_deletes_selected_columns_and_delete_clears_them() {
+    let mut s = table_between(0, 1);
+    run(&mut s, "table.selectColumn", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    assert_eq!(table_cells(&s), [["a1", "c1"], ["a2", "c2"], ["a3", "c3"]]);
+
+    let mut s = table_between(0, 1);
+    run(&mut s, "table.selectColumn", json!({}));
+    run(&mut s, "text.delete", json!({}));
+    assert_eq!(table_cells(&s), [["a1", "", "c1"], ["a2", "", "c2"], ["a3", "", "c3"]]);
+}
+
+#[test]
+fn backspace_on_a_selected_nested_table_removes_only_it() {
+    let mut s = table_between(1, 1);
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [1, 1, 1, 0], "off": 2}}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "insert.table", json!({"rows": 2, "cols": 2}));
+    typ(&mut s, "x");
+    let cell_blocks = |s: &Session| {
+        s.doc
+            .body
+            .iter()
+            .find_map(|b| b.as_table())
+            .and_then(|t| t.rows.get(1)?.cells.get(1))
+            .map(|c| c.blocks.iter().filter(|b| b.as_table().is_some()).count())
+    };
+    assert_eq!(cell_blocks(&s), Some(1), "setup: a table nested in b2");
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    assert_eq!(cell_blocks(&s), Some(0), "the nested table stays");
+    assert_eq!(tables(&s), 1, "the outer table goes too");
+    // The caret is in the cell's paragraph after where the nested table was.
+    assert_eq!(s.sel.focus.path.cell().map(|(t, r, c)| (t.0, r, c)), Some((vec![1], 1, 1)));
+    assert!(s.doc.para_at(&s.sel.focus).is_some());
+}
+
+#[test]
+fn backspace_on_a_selected_table_that_is_the_only_block_leaves_an_empty_paragraph() {
+    let mut s = s();
+    run(&mut s, "insert.table", json!({"rows": 2, "cols": 2}));
+    typ(&mut s, "x");
+    s.doc.body.retain(|b| b.as_table().is_some());
+    assert_eq!(s.doc.body.len(), 1, "setup: the table is the only block");
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    assert_eq!(tables(&s), 0);
+    assert_eq!(texts(&s), [""]);
+    assert!(s.doc.para_at(&s.sel.focus).is_some(), "the caret is in a paragraph: {:?}", s.sel.focus);
+}
+
+#[test]
+fn tracked_backspace_on_a_selected_table_marks_its_text_deleted_like_delete_table() {
+    let mut s = table_between(0, 0);
+    run(&mut s, "review.trackChanges", json!({"value": true}));
+    run(&mut s, "table.selectTable", json!({}));
+    run(&mut s, "text.backspace", json!({}));
+    // Like Table Layout › Delete Table with tracking on: the structure stays, the text is marked deleted.
+    assert_eq!(tables(&s), 1);
+    assert_eq!(table_cells(&s), [["a1", "b1", "c1"], ["a2", "b2", "c2"], ["a3", "b3", "c3"]]);
+    assert_eq!(s.doc.final_text(StoryRef::Body).replace(['\t', '\n'], ""), "Beforeafter");
+    run(&mut s, "review.rejectAll", json!({}));
+    assert_eq!(s.doc.final_text(StoryRef::Body).replace(['\t', '\n'], ""), "Beforea1b1c1a2b2c2a3b3c3after");
+    assert!(s.doc.revisions.is_empty());
+}
+
+/// One selected cell isn't a whole row or column, even in a one-row or one-column table:
+/// Backspace clears it (Word's cell selection has no end-of-row mark).
+#[test]
+fn backspace_on_one_selected_cell_of_a_one_row_or_one_column_table_clears_it() {
+    for (rows, cols, at) in [(1, 3, [0, 1]), (3, 1, [1, 0])] {
+        let mut s = typed("before\n");
+        run(&mut s, "insert.table", json!({"rows": rows, "cols": cols}));
+        typ(&mut s, "x\ty\tz");
+        run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [1, at[0], at[1], 0], "off": 0}}));
+        run(&mut s, "table.selectCell", json!({}));
+        run(&mut s, "text.backspace", json!({}));
+        let want: Vec<Vec<String>> =
+            if rows == 1 { vec![vec!["x".into(), "".into(), "z".into()]] } else { vec![vec!["x".into()], vec!["".into()], vec!["z".into()]] };
+        assert_eq!(table_cells(&s), want, "{rows}×{cols}");
+    }
+}
+
+/// #1670: smart quotes in Hebrew follow the characters around the quote in logical order, as
+/// Word does (Word for Mac 16.113.4): an opening “ after a space or at the start, a closing ”
+/// after a letter, and ” inside an acronym (צה"ל), not gershayim; ' after a letter is ’.
+#[test]
+fn smart_quotes_in_hebrew_use_logical_order() {
+    let bidi = |s: &Session| s.doc.body.iter().filter_map(|b| b.as_para()).next().and_then(|p| p.props.bidi);
+    let s = typed("הוא אמר \"שלום\" לי");
+    assert_eq!(bidi(&s), Some(true), "a right-to-left paragraph");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "הוא אמר “שלום” לי");
+    let s = typed("\"שלום\"");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "“שלום”");
+    let s = typed("צה\"ל ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "צה”ל ");
+    let s = typed("ג'ירפה 'כן'");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "ג’ירפה ‘כן’");
+}
+
+/// #1923: Turkish and Azerbaijani case mapping (i↔İ, ı↔I) in AutoCorrect, checked against Word
+/// with Turkish proofing; other languages keep the Unicode default.
+#[test]
+fn autocorrect_capitalisation_follows_turkic_case_mapping() {
+    for tag in ["tr-TR", "az-AZ"] {
+        let mut s = s();
+        run(&mut s, "review.language", json!({"lang": tag, "default": true}));
+        typ(&mut s, "istanbul güzel. ");
+        assert_eq!(s.doc.plain_text(StoryRef::Body), "İstanbul güzel. ", "{tag}: i capitalises to İ");
+        let mut s = self::s();
+        run(&mut s, "review.language", json!({"lang": tag, "default": true}));
+        typ(&mut s, "İNgilizce ");
+        assert_eq!(s.doc.plain_text(StoryRef::Body), "İngilizce ", "{tag}: İ kept, N lowercased, no combining dot");
+        let mut s = self::s();
+        run(&mut s, "review.language", json!({"lang": tag, "default": true}));
+        typ(&mut s, "ılık ırmak. ");
+        assert_eq!(s.doc.plain_text(StoryRef::Body), "Ilık ırmak. ", "{tag}: ı capitalises to I");
+        let mut s = self::s();
+        run(&mut s, "review.language", json!({"lang": tag, "default": true}));
+        typ(&mut s, "iSTANBUL ");
+        assert_eq!(s.doc.plain_text(StoryRef::Body), "İstanbul ", "{tag}: cAPS LOCK fix");
+        let mut s = self::s();
+        run(&mut s, "review.language", json!({"lang": tag, "default": true}));
+        typ(&mut s, "kızım. TIklamak ");
+        assert_eq!(s.doc.plain_text(StoryRef::Body), "Kızım. Tıklamak ", "{tag}: TWo INitial CApitals lowercases I to ı");
+    }
+    // Other languages are unchanged; a stray İ still lowercases to a single "i".
+    let mut s = s();
+    run(&mut s, "review.language", json!({"lang": "en-US", "default": true}));
+    typ(&mut s, "istanbul güzel. ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Istanbul güzel. ");
+    let mut s = self::s();
+    run(&mut s, "review.language", json!({"lang": "en-US", "default": true}));
+    typ(&mut s, "İNgilizce ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "İngilizce ", "no combining dot in any language");
+}
+
+// Spelling as you type (#1552): the word being typed gets no red squiggle until the caret leaves
+// it; F7 and the Spelling pane still report it. See docs/typing-parity.md. Paragraphs start with
+// a correct word so AutoCorrect's sentence capital doesn't change the misspelled one.
+
+/// The words body paragraph `i` has a spelling squiggle under, in order.
+fn squiggles(s: &mut Session, i: usize) -> Vec<String> {
+    let path = wordcraft_doc::Path::top(i);
+    let text = s.doc.para(StoryRef::Body, &path).map(|p| p.text.clone()).unwrap_or_default();
+    let l = s.layout();
+    l.pages
+        .iter()
+        .flat_map(|pg| pg.items.iter())
+        .filter_map(|it| match it {
+            wordcraft_layout::Placed::Lines { para, path: p, l0: 0, .. } if *p == path => {
+                Some(para.issues.iter().filter(|i| !i.2).filter_map(|i| text.get(i.0..i.1).map(str::to_string)).collect::<Vec<_>>())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The misspelled words `review.issues` (the Spelling pane) reports, in order.
+fn reported(s: &mut Session) -> Vec<String> {
+    let issues = s.run("review.issues", &json!({})).unwrap();
+    issues.as_array().unwrap().iter().filter(|i| i["kind"] == "spelling").map(|i| i["text"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn the_word_being_typed_is_not_marked_until_it_ends() {
+    let mut s = typed("The helo");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new(), "no squiggle while the word is typed");
+    // F7 and the Spelling pane still see it.
+    assert_eq!(reported(&mut s), ["helo"]);
+    let next = s.run("review.spelling", &json!({})).unwrap();
+    assert_eq!(next["text"], "helo");
+    // A space ends the word.
+    let mut s = typed("The helo ");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+    typ(&mut s, "wrld");
+    assert_eq!(squiggles(&mut s, 0), ["helo"], "the next word is being typed");
+    assert_eq!(reported(&mut s), ["helo", "wrld"]);
+    // So does punctuation.
+    typ(&mut s, ".");
+    assert_eq!(squiggles(&mut s, 0), ["helo", "wrld"]);
+    // Enter and Tab too.
+    let mut s = typed("The helo\n");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+    let mut s = typed("The helo\t");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+}
+
+#[test]
+fn moving_the_caret_out_of_the_typed_word_marks_it() {
+    for key in ["caret.left", "caret.home", "caret.wordLeft", "caret.docStart"] {
+        let mut s = typed("The helo");
+        run(&mut s, key, json!({}));
+        assert_eq!(squiggles(&mut s, 0), ["helo"], "{key}");
+        // Coming back to the end of the word doesn't hide the squiggle again.
+        run(&mut s, "caret.end", json!({}));
+        assert_eq!(s.sel.focus, Pos::body(0, 8));
+        assert_eq!(squiggles(&mut s, 0), ["helo"], "{key} then End");
+    }
+    // A selection ends it too.
+    let mut s = typed("The helo");
+    run(&mut s, "select.all", json!({}));
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+}
+
+#[test]
+fn a_click_elsewhere_marks_the_typed_word_and_a_click_back_keeps_the_mark() {
+    let mut s = typed("Fine\nThe helo");
+    assert_eq!(squiggles(&mut s, 1), Vec::<String>::new());
+    // The canvas sets the caret directly on a click.
+    s.sel = crate::Selection::caret(Pos::body(0, 2));
+    assert_eq!(squiggles(&mut s, 1), ["helo"]);
+    s.sel = crate::Selection::caret(Pos::body(1, 8));
+    assert_eq!(squiggles(&mut s, 1), ["helo"], "an existing misspelled word keeps its squiggle");
+    // Typing into it makes it the word being typed again.
+    typ(&mut s, "o");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Fine\nThe heloo");
+    assert_eq!(squiggles(&mut s, 1), Vec::<String>::new());
+    typ(&mut s, " ");
+    assert_eq!(squiggles(&mut s, 1), ["heloo"]);
+}
+
+#[test]
+fn backspace_into_a_finished_word_edits_it_again() {
+    let mut s = typed("The helo ");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+    typ(&mut s, "\u{8}");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    typ(&mut s, "\u{8}\u{8}llo ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "The hello ");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+}
+
+#[test]
+fn autocorrect_and_inserted_text_are_marked_as_usual() {
+    // AutoCorrect fixes the word as the space ends it: nothing to mark.
+    let mut s = typed("I typed teh ");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "I typed the ");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    // Text inserted whole (a paste, an agent): only the word the caret ends in is being typed.
+    let mut s = typed("");
+    run(&mut s, "text.insert", json!({"text": "The helo wrld"}));
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+    // Undo moves the caret: whatever is left is marked, as the Spelling pane reports it.
+    let mut s = typed("The helo");
+    run(&mut s, "caret.left", json!({}));
+    typ(&mut s, "x");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "The helxo");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "The helo");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+    assert_eq!(reported(&mut s), ["helo"]);
+}
+
+#[test]
+fn apostrophes_and_hyphens_stay_part_of_the_word_being_typed() {
+    // Smart quotes turn the apostrophe into ’, which the spelling check keeps in the word.
+    let mut s = typed("It doesn'");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "It doesn’");
+    assert_eq!(reported(&mut s), ["doesn"], "the stem alone is a misspelling");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    let mut s = typed("It doesn't ");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    // A hyphen joins the parts of a compound being typed.
+    let mut s = typed("The nonn-");
+    assert_eq!(reported(&mut s), ["nonn"]);
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    typ(&mut s, "exist");
+    assert_eq!(squiggles(&mut s, 0), Vec::<String>::new());
+    typ(&mut s, " ");
+    assert!(!squiggles(&mut s, 0).is_empty());
+    assert_eq!(squiggles(&mut s, 0), reported(&mut s));
+    // A hyphen after a space starts no word.
+    let mut s = typed("The helo -");
+    assert_eq!(squiggles(&mut s, 0), ["helo"]);
+}
+
+#[test]
+fn text_commands_that_edit_nothing_leave_an_existing_word_marked() {
+    let mut s = typed("Fine\nThe helo");
+    s.sel = crate::Selection::caret(Pos::body(0, 2));
+    assert_eq!(squiggles(&mut s, 1), ["helo"]);
+    s.sel = crate::Selection::caret(Pos::body(1, 8));
+    // Insert switches overtype; Delete at the end of the document and Shift+Tab change no text.
+    run(&mut s, "text.overtype", json!({}));
+    assert_eq!(squiggles(&mut s, 1), ["helo"], "Insert");
+    run(&mut s, "text.overtype", json!({}));
+    let _ = s.run("text.delete", &json!({}));
+    assert_eq!(squiggles(&mut s, 1), ["helo"], "Delete with nothing after the caret");
+    let _ = s.run("text.backTab", &json!({}));
+    assert_eq!(squiggles(&mut s, 1), ["helo"], "Shift+Tab");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), "Fine\nThe helo");
+}
+
+#[test]
+fn typing_over_backward_selection_keeps_its_font() {
+    // As in Word, text typed over a selection takes the first selected character's formatting,
+    // whichever way the selection was made (#2879).
+    for (anchor, focus) in [(6, 11), (11, 6)] {
+        let mut s = s();
+        typ(&mut s, "Hello world");
+        run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": 6}, "focus": {"block": 0, "off": 11}}));
+        run(&mut s, "format.font", json!({"name": "Courier New"}));
+        run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": anchor}, "focus": {"block": 0, "off": focus}}));
+        typ(&mut s, "X");
+        let p = s.doc.body.first().and_then(|b| b.as_para()).unwrap();
+        assert_eq!(p.text, "Hello X", "anchor={anchor} focus={focus}");
+        assert_eq!(p.props_of_char(6).font.as_deref(), Some("Courier New"), "anchor={anchor} focus={focus}");
+        assert_eq!(p.props_of_char(0).font, None, "anchor={anchor} focus={focus}");
+    }
+}
+
+#[test]
+fn right_arrow_moves_through_a_ligature_one_letter_at_a_time() {
+    // A font that draws "ffi" as one glyph (bundled, so the test doesn't depend on the installed
+    // fonts); each Right press moves the drawn caret (#1974).
+    let mut s = s();
+    run(&mut s, "format.font", json!({"name": "Source Serif 4"}));
+    typ(&mut s, "ffi");
+    let drawn_as_one_glyph = s
+        .layout()
+        .pages
+        .iter()
+        .flat_map(|p| p.items.iter())
+        .any(|it| matches!(it, wordcraft_layout::Placed::Lines { para, .. } if para.glyphs.len() < para.clusters.len()));
+    assert!(drawn_as_one_glyph, "Source Serif 4 should draw ffi as a ligature");
+    run(&mut s, "caret.home", json!({}));
+    let mut xs = Vec::new();
+    for _ in 0..4 {
+        let l = s.layout();
+        xs.push((s.sel.focus.off, l.caret(&s.sel.focus).unwrap().x));
+        run(&mut s, "caret.right", json!({}));
+    }
+    let offs: Vec<usize> = xs.iter().map(|p| p.0).collect();
+    assert_eq!(offs, [0, 1, 2, 3]);
+    assert!(xs.windows(2).all(|w| w[0].1 < w[1].1), "caret x after each Right press: {xs:?}");
 }

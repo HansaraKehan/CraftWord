@@ -213,73 +213,87 @@ pub fn tabs(app: &mut WordApp, ui: &mut Ui, f: &mut TabsForm) -> bool {
                 ui.set_min_height(96.0);
                 let mut remove = None;
                 let mut row_active = false;
-                // The stops as an inline-editable table: position, alignment, clear. Fill the
-                // frame, so rows span its width and the scrollbar sits at its edge.
-                egui::ScrollArea::vertical().max_height(96.0).auto_shrink([false, true]).show(ui, |ui| {
-                    for i in 0..f.stops.len() {
-                        let Some(t) = f.stops.get(i).copied() else { continue };
-                        ui.push_id(i, |ui| {
-                            let row = ui.horizontal(|ui| {
-                                // Position, edited in place: the interface unit by default, any
-                                // unit spelled out, either decimal separator (`.measure`).
-                                let mut pv = t.pos / k;
-                                let r = ui.add_sized(
-                                    vec2(58.0, 18.0),
-                                    egui::DragValue::new(&mut pv).speed(0.05).range(-1584.0 / k..=1584.0 / k).measure(u).max_decimals(2),
-                                );
-                                if r.changed() {
-                                    f.set_pos(i, pv * k);
-                                }
-                                if r.has_focus() || r.dragged() {
-                                    row_active = true;
-                                    if f.selected != Some(i) {
+                if f.stops.is_empty() {
+                    // #3031: a fresh paragraph has no stops; say the list is empty instead of
+                    // showing a blank box.
+                    ui.add_space(38.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new(tl!("(none)")).small().color(Tokens::get(ui.ctx()).text_dim));
+                    });
+                } else {
+                    // The stops as an inline-editable table: position, alignment, clear. Fill the
+                    // frame, so rows span its width and the scrollbar sits at its edge.
+                    egui::ScrollArea::vertical().max_height(96.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for i in 0..f.stops.len() {
+                            let Some(t) = f.stops.get(i).copied() else { continue };
+                            ui.push_id(i, |ui| {
+                                let row = ui.horizontal(|ui| {
+                                    // Position, edited in place: the interface unit by default, any
+                                    // unit spelled out, either decimal separator (`.measure`).
+                                    let mut pv = t.pos / k;
+                                    let r = ui.add_sized(
+                                        vec2(58.0, 18.0),
+                                        egui::DragValue::new(&mut pv).speed(0.05).range(-1584.0 / k..=1584.0 / k).measure(u).max_decimals(2),
+                                    );
+                                    if r.changed() {
+                                        f.set_pos(i, pv * k);
+                                    }
+                                    if r.has_focus() || r.dragged() {
+                                        row_active = true;
+                                        if f.selected != Some(i) {
+                                            pick = Some(i);
+                                        }
+                                    }
+                                    // Alignment, picked in place.
+                                    let mut a = t.align;
+                                    egui::ComboBox::from_id_salt("tab_align")
+                                        .width(86.0)
+                                        .selected_text(tl!(crate::ruler_tabs::kind_label(a)))
+                                        .show_ui(ui, |ui| {
+                                            for v in crate::ruler_tabs::KINDS {
+                                                ui.selectable_value(&mut a, v, tl!(crate::ruler_tabs::kind_label(v)));
+                                            }
+                                        });
+                                    if a != t.align {
+                                        f.set_align(i, a);
                                         pick = Some(i);
                                     }
-                                }
-                                // Alignment, picked in place.
-                                let mut a = t.align;
-                                egui::ComboBox::from_id_salt("tab_align").width(86.0).selected_text(tl!(crate::ruler_tabs::kind_label(a))).show_ui(
-                                    ui,
-                                    |ui| {
-                                        for v in crate::ruler_tabs::KINDS {
-                                            ui.selectable_value(&mut a, v, tl!(crate::ruler_tabs::kind_label(v)));
+                                    // Leader, picked in place; the closed box shows just the fill.
+                                    let mut l = t.leader;
+                                    let shown = LEADERS
+                                        .iter()
+                                        .find(|(v, _, _)| *v == l)
+                                        .map(|(_, _, fill)| if fill.is_empty() { tl!("None").to_string() } else { (*fill).to_string() })
+                                        .unwrap_or_default();
+                                    egui::ComboBox::from_id_salt("tab_leader").width(64.0).selected_text(shown).show_ui(ui, |ui| {
+                                        for (v, label, _) in LEADERS {
+                                            ui.selectable_value(&mut l, v, tl!(label));
                                         }
-                                    },
-                                );
-                                if a != t.align {
-                                    f.set_align(i, a);
-                                    pick = Some(i);
-                                }
-                                // Leader, picked in place; the closed box shows just the fill.
-                                let mut l = t.leader;
-                                let shown = LEADERS
-                                    .iter()
-                                    .find(|(v, _, _)| *v == l)
-                                    .map(|(_, _, fill)| if fill.is_empty() { tl!("None").to_string() } else { (*fill).to_string() })
-                                    .unwrap_or_default();
-                                egui::ComboBox::from_id_salt("tab_leader").width(64.0).selected_text(shown).show_ui(ui, |ui| {
-                                    for (v, label, _) in LEADERS {
-                                        ui.selectable_value(&mut l, v, tl!(label));
+                                    });
+                                    if l != t.leader {
+                                        f.set_leader(i, l);
+                                        pick = Some(i);
                                     }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.add_space(10.0); // clear of the scrollbar
+                                        if ui.add(egui::Button::new("×").small().frame(false)).on_hover_text(tl!("Clear")).clicked() {
+                                            remove = Some(i);
+                                        }
+                                    });
                                 });
-                                if l != t.leader {
-                                    f.set_leader(i, l);
-                                    pick = Some(i);
+                                if f.selected == Some(i) {
+                                    let tok = Tokens::get(ui.ctx());
+                                    ui.painter().rect_stroke(
+                                        row.response.rect.expand(1.0),
+                                        2.0,
+                                        Stroke::new(1.0, tok.accent),
+                                        egui::StrokeKind::Outside,
+                                    );
                                 }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.add_space(10.0); // clear of the scrollbar
-                                    if ui.add(egui::Button::new("×").small().frame(false)).on_hover_text(tl!("Clear")).clicked() {
-                                        remove = Some(i);
-                                    }
-                                });
                             });
-                            if f.selected == Some(i) {
-                                let tok = Tokens::get(ui.ctx());
-                                ui.painter().rect_stroke(row.response.rect.expand(1.0), 2.0, Stroke::new(1.0, tok.accent), egui::StrokeKind::Outside);
-                            }
-                        });
-                    }
-                });
+                        }
+                    });
+                }
                 if let Some(i) = remove {
                     f.remove_stop(i);
                 } else if f.selected.is_some() && ui.memory(|m| m.focused().is_none()) && ui.input(|inp| inp.key_pressed(egui::Key::Delete)) {
@@ -898,5 +912,35 @@ mod tests {
         let mut f = TabsForm::read(&app).unwrap_or_else(|| panic!("form"));
         f.new_stop();
         assert_eq!(f.stops[0].pos, 36.0);
+    }
+
+    /// #3031: a paragraph with no stops — the default — says so in the list box instead of
+    /// showing a blank frame.
+    #[test]
+    fn the_tabs_dialog_says_when_there_are_no_stops() {
+        let mut app = app_with("plain");
+        let _ = app.run("para.tabs", json!({}));
+        assert!(matches!(&app.dialog, Some(Dialog::Tabs { form }) if form.stops.is_empty()));
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        for _ in 0..4 {
+            h.step();
+        }
+        let texts: Vec<String> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("(none)")), "empty-state hint shown");
     }
 }

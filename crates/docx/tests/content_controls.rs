@@ -228,3 +228,20 @@ fn deeply_nested_controls_are_bounded() {
     let back = read(&write(&d).unwrap()).unwrap();
     assert_eq!(controls(&back).len(), 60);
 }
+
+/// A control's `w:rPr` (ECMA-376 §17.5.2.27) is read as the formatting entered text takes, and
+/// still written back as it was.
+#[test]
+fn a_controls_run_properties_are_read_and_kept() {
+    let docx = package(&p(&format!(
+        "{}{}",
+        t("Name: "),
+        sdt(r#"<w:rPr><w:rStyle w:val="Eingabe"/><w:sz w:val="20"/></w:rPr><w:id w:val="11"/><w:showingPlcHdr/>"#, &t("Eingabe"))
+    )));
+    let d = read(&docx).unwrap();
+    let c = by_id(&d, 11);
+    let rp = c.run_props.expect("run properties read");
+    assert_eq!((rp.style.as_deref(), rp.size), (Some("Eingabe"), Some(10.0)));
+    let out = document_xml(&write(&d).unwrap());
+    assert!(out.contains(r#"<w:rPr><w:rStyle w:val="Eingabe"/><w:sz w:val="20"/></w:rPr>"#), "{out}");
+}

@@ -214,6 +214,7 @@
 	Use the Insert key to switch overtype on and off	使用 Insert 鍵切換取代模式
 	Whole document	整份文件
 	This section	本節
+	Selected text	選取的文字
 	Fill	填滿
 	Setting:	設定：
 	3-D	立體
@@ -568,6 +569,10 @@
 	Modify…	修改…
 	Move or Resize	移動或調整大小
 	Multilevel List	多層次清單
+	Multilevel List Library	多層次清單庫
+	Article I.	第 I 條
+	Chapter 1	第 1 章
+	Section 1.01	第 1.01 節
 	Multiple Pages	多頁
 	Name (A–Z)	名稱（A–Z）
 	Name:	名稱：
@@ -831,6 +836,8 @@
 	Space before/after:	段落前/後間距：
 	Spacing	間距
 	Spacing (pt):	間距（點）：
+	Kerning for fonts:	字型的字距調整：
+	Points and above	點及以上
 	Speech	語音
 	Spelling & Grammar	拼字及文法
 	Spelling &\nGrammar	拼字及文法
@@ -1484,6 +1491,8 @@
 	Math AutoCorrect	數學自動校正
 	More >>	更多 >>
 	Moves	移動
+	Moved from:	移動自:
+	Moved to:	移動到:
 	New document	新文件
 	No changes (read only)	不允許任何變更 (唯讀)
 	Only allow this kind of editing:	僅允許此類編輯:
@@ -1543,6 +1552,8 @@
 	Customize Ribbon	自訂功能區
 	Add to Quick Access Toolbar	新增至快速存取工具列
 	Remove from Quick Access Toolbar	從快速存取工具列移除
+	Hide Quick Access Toolbar	隱藏快速存取工具列
+	Show Quick Access Toolbar	顯示快速存取工具列
 	Customize the Ribbon…	自訂功能區…
 	Customize Quick Access Toolbar…	自訂快速存取工具列…
 	More Commands…	其他命令…
@@ -2046,6 +2057,7 @@
 	Hyphenation zone:	斷字區：
 	Italian	義大利文
 	Croatian	克羅埃西亞文
+	Indonesian	印尼文
 	Japanese	日文
 	Korean	韓文
 	Limit consecutive hyphens to:	連續斷字數上限：
@@ -2129,6 +2141,10 @@
 	Contains	包含
 	Does not contain	不包含
 	{count} of {total} recipients will be merged.	將合併 {total} 位收件者中的 {count} 位。
+	Find in list:	在清單中尋找：
+	Any field	任意欄位
+	Matches: {count}	相符項目：{count}
+	Show only records that will be merged	僅顯示將要合併的記錄
 	Take the last match on the page	取本頁最後一個相符項目
 	Show its list number	顯示其清單編號
 	Show its number relative to this field	顯示相對於此欄位的編號
@@ -2234,3 +2250,42 @@
 # Reading Mode column widths (#1040)
 	Narrow	窄
 	Medium	中等
+# Split Cells and Convert Text to Table (#2592)
+	Merge cells before split	分割前合併儲存格
+	Table size	表格大小
+	AutoFit behavior	自動調整行為
+	Initial column width:	初始欄寬：
+	AutoFit to contents	依內容自動調整
+	AutoFit to window	依視窗自動調整
+	Separate text at	分隔文字於
+	Commas	逗號
+	Other:	其他：
+	The number must be between 1 and {max}.	數字必須介於 1 和 {max} 之間。
+	The measurement must be between {min} and {max}.	度量值必須介於 {min} 和 {max} 之間。
+	Recently Used Fonts	最近使用的字型
+	All Fonts	所有字型
+	Spike	收集區
+	Insert Spike	插入收集區
+# Add Font status (#1789)
+	Added 1 font	已新增 1 個字型
+	Added {n} fonts	已新增 {n} 個字型
+	{added}; {count} couldn't be read: {names}	{added}；{count} 個無法讀取：{names}
+	{names} and {n} more	{names} 等另外 {n} 個
+	{added}; {n} skipped (limit {max})	{added}；已略過 {n} 個（上限 {max}）
+
+# Drop Cap menu and Drop Cap Options (#2601)
+	Dropped	下沉
+	In margin	懸掛
+	Drop Cap Options…	首字放大選項…
+	Lines to drop:	放大行數：
+	Distance from text:	與本文距離：
+	Distance from text	與本文距離
+
+# Picture Format › Size: the Size dialog, sizes typed in any unit (#2573)
+	Lock aspect ratio	鎖定長寬比
+	Relative to original picture size	相對於原始圖片大小
+	Original size	原始大小
+	{width} × {height} pixels	{width} × {height} 像素
+	Type a size in any unit, such as 5 cm or 300 px. The other side follows, so the picture keeps its proportions.	可用任何單位輸入大小，例如 5 cm 或 300 px。另一邊隨之調整，圖片保持原有比例。
+
+	Import…	匯入…

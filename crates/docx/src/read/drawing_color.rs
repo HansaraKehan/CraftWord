@@ -79,7 +79,8 @@ pub(crate) fn color(e: &El, theme: &[Rgb]) -> Option<Rgb> {
 /// A preset colour (`a:prstClr/@val`, ECMA-376 Part 1 §20.1.10.48): the common ones; others are
 /// unknown (`None`).
 pub(crate) fn preset_color(name: &str) -> Option<Rgb> {
-    Some(match name {
+    let lower = name.to_ascii_lowercase();
+    Some(match lower.as_str() {
         "black" => Rgb(0, 0, 0),
         "white" => Rgb(0xFF, 0xFF, 0xFF),
         "red" => Rgb(0xFF, 0, 0),
@@ -91,8 +92,8 @@ pub(crate) fn preset_color(name: &str) -> Option<Rgb> {
         "magenta" | "fuchsia" => Rgb(0xFF, 0, 0xFF),
         "gray" | "grey" => Rgb(0x80, 0x80, 0x80),
         "silver" => Rgb(0xC0, 0xC0, 0xC0),
-        "ltGray" | "ltGrey" => Rgb(0xD3, 0xD3, 0xD3),
-        "dkGray" | "dkGrey" => Rgb(0xA9, 0xA9, 0xA9),
+        "ltgray" | "ltgrey" | "lightgray" | "lightgrey" => Rgb(0xD3, 0xD3, 0xD3),
+        "dkgray" | "dkgrey" | "darkgray" | "darkgrey" => Rgb(0xA9, 0xA9, 0xA9),
         "maroon" => Rgb(0x80, 0, 0),
         "navy" => Rgb(0, 0, 0x80),
         "olive" => Rgb(0x80, 0x80, 0),
@@ -101,6 +102,18 @@ pub(crate) fn preset_color(name: &str) -> Option<Rgb> {
         "orange" => Rgb(0xFF, 0xA5, 0),
         "brown" => Rgb(0xA5, 0x2A, 0x2A),
         "pink" => Rgb(0xFF, 0xC0, 0xCB),
+        "gold" => Rgb(0xFF, 0xD7, 0),
+        "darkblue" | "dkblue" => Rgb(0, 0, 0x8B),
+        "darkred" | "dkred" => Rgb(0x8B, 0, 0),
+        "darkgreen" | "dkgreen" => Rgb(0, 0x64, 0),
+        "lightblue" | "ltblue" => Rgb(0xAD, 0xD8, 0xE6),
+        "coral" => Rgb(0xFF, 0x7F, 0x50),
+        "salmon" => Rgb(0xFA, 0x80, 0x72),
+        "tomato" => Rgb(0xFF, 0x63, 0x47),
+        "violet" => Rgb(0xEE, 0x82, 0xEE),
+        "indigo" => Rgb(0x4B, 0, 0x82),
+        "beige" => Rgb(0xF5, 0xF5, 0xDC),
+        "ivory" => Rgb(0xFF, 0xFF, 0xF0),
         _ => return None,
     })
 }
@@ -240,5 +253,17 @@ mod tests {
         let a = el("a:srgbClr", r#"val="808080""#, r#"<a:lumMod val="50000"/><a:lumOff val="50000"/>"#);
         let b = el("a:srgbClr", r#"val="808080""#, r#"<a:lumOff val="50000"/><a:lumMod val="50000"/>"#);
         assert_ne!(color(&a, &theme), color(&b, &theme));
+    }
+
+    #[test]
+    fn preset_colors_are_case_insensitive_and_include_common_names() {
+        assert_eq!(preset_color("red"), Some(Rgb(255, 0, 0)));
+        assert_eq!(preset_color("Red"), Some(Rgb(255, 0, 0)));
+        assert_eq!(preset_color("darkBlue"), Some(Rgb(0, 0, 0x8B)));
+        assert_eq!(preset_color("dkBlue"), Some(Rgb(0, 0, 0x8B)));
+        assert_eq!(preset_color("lightGray"), Some(Rgb(0xD3, 0xD3, 0xD3)));
+        assert_eq!(preset_color("ltGray"), Some(Rgb(0xD3, 0xD3, 0xD3)));
+        assert_eq!(preset_color("gold"), Some(Rgb(0xFF, 0xD7, 0)));
+        assert_eq!(preset_color("unknownColor"), None);
     }
 }

@@ -46,6 +46,8 @@ pub(crate) struct EmbedWriter<'d> {
     markup_bytes: u64,
     /// Parts to write: (name, bytes, content type, relationships).
     pub parts: Vec<(String, Vec<u8>, String, PartRels)>,
+    /// Leave out the main document's kept glossary (it's written from the model instead).
+    pub drop_glossary: bool,
 }
 
 impl<'d> EmbedWriter<'d> {
@@ -90,6 +92,7 @@ impl<'d> EmbedWriter<'d> {
             copy_bytes: MAX_COPY_BYTES,
             markup_bytes: MAX_MARKUP_BYTES,
             parts: Vec::new(),
+            drop_glossary: false,
         }
     }
 
@@ -142,7 +145,7 @@ impl<'d> EmbedWriter<'d> {
     }
 
     /// A number `n` for which every `{stem}{n}{ext}` is a free part name, with those names taken.
-    fn fresh_set(&mut self, stems: &[&str], ext: &str) -> Vec<String> {
+    pub(super) fn fresh_set(&mut self, stems: &[&str], ext: &str) -> Vec<String> {
         let mut n: u32 = 1;
         loop {
             let names: Vec<String> = stems.iter().map(|s| format!("{s}{n}{ext}")).collect();
@@ -205,7 +208,7 @@ impl<'d> EmbedWriter<'d> {
         for line in String::from_utf8_lossy(&roots).lines().take(MAX_EMBEDDED_RELS * 2) {
             let fields: Vec<&str> = line.split('\t').collect();
             let [source, kind, target] = fields.as_slice() else { continue };
-            if *source != owner {
+            if *source != owner || (self.drop_glossary && owner == "D" && rel_is(kind, rt::GLOSSARY)) {
                 continue;
             }
             if let Some(name) = self.copy_tree(target, &mut memo, &mut written) {
@@ -214,6 +217,15 @@ impl<'d> EmbedWriter<'d> {
             }
         }
         self.first = memo;
+    }
+
+    /// Whether `unmodelled_rels("D", …)` can write the main document's kept glossary back.
+    pub fn kept_glossary(&self) -> bool {
+        let Some(roots) = self.passthrough.get(crate::package::UNMODELLED_ROOTS) else { return false };
+        String::from_utf8_lossy(roots).lines().take(MAX_EMBEDDED_RELS * 2).any(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            matches!(fields.as_slice(), [source, kind, target] if *source == "D" && rel_is(kind, rt::GLOSSARY) && (self.first.contains_key(*target) || self.available(target)))
+        })
     }
 
     /// What copying the parts reached from `roots` costs against the copy budget.
@@ -517,6 +529,38 @@ impl super::Writer<'_> {
             _ => None,
         }) {
             Self::ink_transform(c, from, to, float, depth + 1);
+        }
+    }
+
+    /// Put a group or canvas member kept from a file (native ink and its picture fallback) at
+    /// `frame` ([x, y, w, h] in points, in the group's space, as the group is written): its
+    /// `w14:xfrm` and the fallback's `a:xfrm` get that offset and extent and the member's turn.
+    /// It rewrites every `w14:xfrm` and `a:xfrm` under `e` and doesn't descend into them: right
+    /// for the forms Word writes (the content part's own transform and one `pic:pic` fallback's
+    /// `pic:spPr/a:xfrm`); a fallback holding several transforms (a group) would get one frame.
+    pub(super) fn place_member(e: &mut El, frame: [f32; 4], float: &Float, depth: usize) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        if matches!(e.name.as_str(), "w14:xfrm" | "a:xfrm") {
+            e.attrs.retain(|(k, _)| !matches!(k.as_str(), "rot" | "flipH" | "flipV"));
+            for (k, v) in super::story::spin_attrs(float.spin()) {
+                e.attrs.push((k.to_string(), v));
+            }
+            let [x, y, w, h] = frame.map(|v| v.clamp(-MAX_LEN_PT, MAX_LEN_PT));
+            e.kids.retain(|k| !matches!(k, xml::Node::El(c) if matches!(c.name.as_str(), "a:off" | "a:ext")));
+            let el = |name: &str, attrs: [(&str, String); 2]| {
+                xml::Node::El(El { name: name.to_string(), attrs: attrs.map(|(k, v)| (k.to_string(), v)).to_vec(), kids: Vec::new() })
+            };
+            e.kids.insert(0, el("a:ext", [("cx", emu(w.max(0.0))), ("cy", emu(h.max(0.0)))]));
+            e.kids.insert(0, el("a:off", [("x", emu(x)), ("y", emu(y))]));
+            return;
+        }
+        for c in e.kids.iter_mut().filter_map(|k| match k {
+            xml::Node::El(c) => Some(c),
+            _ => None,
+        }) {
+            Self::place_member(c, frame, float, depth + 1);
         }
     }
 }

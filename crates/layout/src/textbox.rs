@@ -117,6 +117,30 @@ pub(crate) fn box_items(ctx: &mut Ctx, id: u32, rect: Rect, depth: usize) -> Vec
     place(items, &body, rect, across)
 }
 
+/// The height of a `w` wide text box `id` that resizes to fit its text (`a:spAutoFit`): its text's
+/// depth plus its top and bottom margins, as Word fits it when laying the document out. `None`
+/// for a box that keeps its own height: one that doesn't resize, with turned text, or linked.
+pub(crate) fn fitted_height(ctx: &mut Ctx, id: u32, w: f32) -> Option<f32> {
+    let body = ctx.doc.parts.get(&id).map(|p| p.body)?;
+    if !body.auto_fit || body.vert.turn() != TextDirection::Horizontal || body.next.is_some() {
+        return None;
+    }
+    ctx.chains.build(ctx.doc);
+    if ctx.chains.member.contains_key(&id) || !ctx.boxes.enter(id) {
+        return None;
+    }
+    let blocks = ctx.doc.parts.get(&id).map(|p| p.blocks.clone()).unwrap_or_default();
+    let (len, _) = frame(&body, w, 0.0);
+    // Measuring doesn't count the box's list numbers and equations: `box_items` lays it out again.
+    let snap = (ctx.counters.clone(), ctx.eq_count);
+    let items = lay(ctx, id, &blocks, len, body.vert, 0);
+    (ctx.counters, ctx.eq_count) = snap;
+    ctx.boxes.leave();
+    let [_, t, _, b] = body.insets_pt();
+    let h = extent(&items) + t + b;
+    h.is_finite().then_some(h)
+}
+
 /// Move items laid out in a box's frame onto the page: aligned in the `across` room (top,
 /// middle, bottom; for turned text, from the side its lines start on) and turned.
 fn place(mut items: Vec<Placed>, body: &TextBody, rect: Rect, across: f32) -> Vec<Placed> {

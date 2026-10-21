@@ -510,10 +510,10 @@ fn body(ui: &mut Ui, d: &mut ColorsDialog) -> Option<bool> {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(tl!("Cancel")).clicked() {
+            let (okb, cancelb) = crate::dialogs::ok_cancel_responses(ui, |ui| ui.add(crate::widgets::primary_button(ui, tl!("OK"))), tl!("Cancel"));
+            if cancelb.clicked() {
                 out = Some(false);
             }
-            let okb = ui.add(crate::widgets::primary_button(ui, tl!("OK")));
             let typing = ui.ctx().memory(|m| m.focused().is_some());
             if okb.clicked() || (!typing && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 out = Some(true);
