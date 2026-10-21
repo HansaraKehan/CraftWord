@@ -164,6 +164,7 @@ jobs:
         working-directory: src
         env:
           VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
           BT="$ANDROID_HOME/build-tools/${BT_VERSION}"
           PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
@@ -177,7 +178,7 @@ jobs:
           "$BT/d8" --release --min-api 28 --lib "$PLATFORM" --output "$B/dex" "$B/classes.jar"
           "$BT/aapt2" compile --dir "$B/res" -o "$B/resources.zip"
           "$BT/aapt2" link -I "$PLATFORM" --manifest packaging/android/AndroidManifest.xml \
-            --version-code "$(( $(date +%s) / 60 ))" --version-name "${VERSION}-android.${GITHUB_RUN_NUMBER}" \
+            --version-code "$(( $(date +%s) / 60 ))" --version-name "${TAG}" \
             -o "$B/unsigned.apk" "$B/resources.zip"
 
           B="$B" LIB="target/${TARGET}/release/libwordcraft_android.so" python3 - <<'PY'
