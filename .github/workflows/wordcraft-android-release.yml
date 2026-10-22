@@ -220,5 +220,8 @@ jobs:
           - Download the \`.apk\`, open it, and allow installs from your file manager or browser when Android asks.
           - Unofficial build, not made or supported by the WordCraft team. If an update will not install over an older build, uninstall the old one first.
           NOTES
+          if [ -f "$RUNNER_TEMP/layer/whats-new.md" ]; then
+            { echo; echo "## What's new"; echo; cat "$RUNNER_TEMP/layer/whats-new.md"; } >> notes.md
+          fi
           gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "WordCraft ${VERSION} Android (${SHA})" --notes-file notes.md
