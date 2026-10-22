@@ -1,12 +1,14 @@
 <img width="2304" height="1440" alt="Screenshot_20261016_160056" src="https://github.com/user-attachments/assets/0e96585f-3dda-4ea9-8cd8-97434c9d3d19" />
 
-### 📊 App Downloads
+### 📊 Application Downloads
 
-| Application | Description | Downloads | Link |
+| Application | Description | Total Downloads | Releases |
 | :--- | :--- | :--- | :--- |
-| **PhotoCraft** | Image editing app | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftPhoto/total?style=flat-square&color=blue)](https://github.com/HansaraKehan/CraftPhoto/releases) | [Releases](https://github.com/HansaraKehan/CraftPhoto/releases) |
-| **LightCraft** | Light & theme utility | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/Craftlight/total?style=flat-square&color=orange)](https://github.com/HansaraKehan/Craftlight/releases) | [Releases](https://github.com/HansaraKehan/Craftlight/releases) |
-| **WordCraft** | Text utility app | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftWord/total?style=flat-square&color=green)](https://github.com/HansaraKehan/CraftWord/releases) | [Releases](https://github.com/HansaraKehan/CraftWord/releases) |
+| **PhotoCraft** | Image editing app | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftPhoto/total?style=flat-square&color=blue)](https://github.com/HansaraKehan/CraftPhoto/releases) | [View Releases](https://github.com/HansaraKehan/CraftPhoto/releases) |
+| **LightCraft** | Light & theme utility | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/Craftlight/total?style=flat-square&color=orange)](https://github.com/HansaraKehan/Craftlight/releases) | [View Releases](https://github.com/HansaraKehan/Craftlight/releases) |
+| **WordCraft** | Text utility app | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftWord/total?style=flat-square&color=green)](https://github.com/HansaraKehan/CraftWord/releases) | [View Releases](https://github.com/HansaraKehan/CraftWord/releases) |
+| **VectorCraft** | Vector graphic tool | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftVector/total?style=flat-square&color=purple)](https://github.com/HansaraKehan/CraftVector/releases) | [View Releases](https://github.com/HansaraKehan/CraftVector/releases) |
+| **PDFCraft** | PDF manipulation tool | [![Downloads](https://img.shields.io/github/downloads/HansaraKehan/CraftPdf/total?style=flat-square&color=red)](https://github.com/HansaraKehan/CraftPdf/releases) | [View Releases](https://github.com/HansaraKehan/CraftPdf/releases) |
 
 # WordCraft for Android (early preview)
 
