@@ -18,7 +18,6 @@ processor written in Rust by the ArtCraft team. It reads and writes `.docx` and 
 tables, track changes and references of the desktop app. This build runs it as a native Android app (egui + wgpu),
 not as a web page.
 
-> **Early preview.** This is a first working port, not a finished product. See [Limitations](#limitations).
 
 This repository does not contain WordCraft's source. A GitHub Actions workflow downloads the upstream source,
 adds a small Android layer, builds the APK and publishes it under [Releases](https://github.com/HansaraKehan/CraftWord/releases).
