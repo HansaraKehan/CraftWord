@@ -246,7 +246,7 @@ fn border_line(s: &Session, at: &Pos) -> Option<Border> {
         || at.off != text.len()
         || text.len() < 3
         || !text.chars().all(|x| x == c)
-        || para.props.numbering.is_some_and(|n| n.num != 0)
+        || s.doc.styles.resolve_para(&para.props).numbering.is_some_and(|n| n.num != 0)
         || para.run_ranges().any(|(_, r)| r.del.is_some())
     {
         return None;
@@ -273,7 +273,7 @@ fn table_line(s: &Session, at: &Pos) -> Option<Vec<usize>> {
         || at.story != StoryRef::Body
         || at.path.0.len() != 1
         || at.off != text.len()
-        || para.props.numbering.is_some_and(|n| n.num != 0)
+        || s.doc.styles.resolve_para(&para.props).numbering.is_some_and(|n| n.num != 0)
         || para.run_ranges().any(|(_, c)| c.del.is_some())
     {
         return None;
@@ -699,6 +699,31 @@ fn new_paragraph(s: &mut Session, _: &Value) -> CmdResult {
     }
     // Enter finishes a word like a space does ("teh" → "the", sentence capitals, links).
     if s.sel.is_collapsed() && at.off > 0 {
+        // A `*bold*` or `_italic_` word: like the border lines above, Undo right after brings
+        // the marks back and the Enter stays.
+        let plain = super::tools::has_emphasis(s, true).then(|| (s.doc.clone(), s.sel.clone()));
+        if let Some((doc, sel)) = plain {
+            // Removes the marks, then AutoCorrects the word as without them.
+            super::tools::autocorrect_word(s, true)?;
+            s.autocap.take_if(|c| c.depth == u64::MAX);
+            let (done_doc, done_sel) = (std::mem::replace(&mut s.doc, doc), std::mem::replace(&mut s.sel, sel));
+            let new = split_para(s, &at)?;
+            let c = s.doc.para_at(&new).map(|p| p.mark.clone()).unwrap_or_default();
+            s.sel = Selection::caret(new);
+            let plain_doc = std::mem::replace(&mut s.doc, done_doc);
+            let plain_sel = std::mem::replace(&mut s.sel, done_sel);
+            let new = split_para(s, &s.sel.focus.clone())?;
+            let p = s.doc.para_mut(new.story, &new.path)?;
+            // The new paragraph is formatted as after a plain Enter (the closing mark's
+            // formatting, or none when the next style starts afresh); its mark keeps its revisions.
+            let (ins, del, fmt_change) = (p.mark.ins, p.mark.del, p.mark.fmt_change.take());
+            p.mark = wordcraft_doc::props::CharProps { ins, del, fmt_change, ..c };
+            p.touch();
+            s.sel = Selection::caret(new);
+            s.goal_x = None;
+            s.push_undo("AutoFormat", plain_doc, plain_sel);
+            return sel_result(s);
+        }
         super::tools::autocorrect_word(s, true)?;
         s.autocap.take_if(|c| c.depth == u64::MAX);
         at = s.sel.focus.clone();

@@ -286,7 +286,7 @@ fn content_base(s: &Session, r: &ControlRange) -> CharProps {
 /// and stops showing it. Returns the formatting the text should get, when it changes.
 pub fn prepare_edit(s: &mut Session) -> Result<Option<CharProps>, CmdError> {
     if s.sel.is_collapsed() {
-        let at = s.doc.typing_pos(&s.sel.focus);
+        let at = super::protect::typing_pos(s, &s.doc.typing_pos(&s.sel.focus));
         if at != s.sel.focus {
             s.sel = Selection::caret(at);
         }

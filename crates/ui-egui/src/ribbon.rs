@@ -2197,12 +2197,16 @@ fn review(app: &mut WordApp, ui: &mut Ui) {
     });
     group(ui, "Changes", None, app, |ui, app| {
         menu_button(ui, app, "accept", Some("Accept"), "Accept", true, "review.accept", |ui, app| {
+            mi(ui, app, "Accept and Move to Next", "review.accept", json!({"next": true}));
             mi(ui, app, "Accept This Change", "review.accept", json!({}));
             mi(ui, app, "Accept All Changes", "review.acceptAll", json!({}));
+            mi(ui, app, "Accept All Changes and Stop Tracking", "review.acceptAll", json!({"stopTracking": true}));
         });
         menu_button(ui, app, "reject", Some("Reject"), "Reject", true, "review.reject", |ui, app| {
+            mi(ui, app, "Reject and Move to Next", "review.reject", json!({"next": true}));
             mi(ui, app, "Reject Change", "review.reject", json!({}));
             mi(ui, app, "Reject All Changes", "review.rejectAll", json!({}));
+            mi(ui, app, "Reject All Changes and Stop Tracking", "review.rejectAll", json!({"stopTracking": true}));
         });
         stack(ui, |ui| {
             small(ui, app, "prevChange", Some("Previous"), "Previous Change", "review.previousChange", json!({}), false);

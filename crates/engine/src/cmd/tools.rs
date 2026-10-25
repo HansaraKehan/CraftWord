@@ -93,6 +93,9 @@ pub struct AutoCorrectPrefs {
     pub fractions: bool,
     /// Ordinals (1st) with superscript.
     pub ordinals: bool,
+    /// *Bold* and _italic_ with real formatting: the marks are removed and the text between them
+    /// is made bold or italic. Off unless the user turns it on.
+    pub bold_italic: bool,
     /// Hyphens (--) with dashes.
     pub dashes: bool,
     /// Internet addresses with hyperlinks.
@@ -141,6 +144,7 @@ impl Default for AutoCorrectPrefs {
             smart_quotes: true,
             fractions: true,
             ordinals: true,
+            bold_italic: false,
             dashes: true,
             links: true,
             bullets: true,
@@ -332,6 +336,7 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         ("smartQuotes", &mut ac.smart_quotes),
         ("fractions", &mut ac.fractions),
         ("ordinals", &mut ac.ordinals),
+        ("boldItalic", &mut ac.bold_italic),
         ("dashes", &mut ac.dashes),
         ("links", &mut ac.links),
         ("bullets", &mut ac.bullets),
@@ -407,6 +412,7 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         "smartQuotes": ac.smart_quotes,
         "fractions": ac.fractions,
         "ordinals": ac.ordinals,
+        "boldItalic": ac.bold_italic,
         "dashes": ac.dashes,
         "links": ac.links,
         "bullets": ac.bullets,
@@ -451,7 +457,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         CommandSpec::new("tools.autocorrect", "AutoCorrect Options", "File › Options › Proofing", autocorrect_options)
             .params(
-                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "tabIndent"?: bool (Set left- and first-indent with tabs and backspaces; default false), "headingStyles"?: bool (Built-in Heading styles; default false), "autoAddFirstLetter"|"autoAddInitialCaps"?: bool (Automatically add words to the exception lists when an automatic capital is undone; default true), "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
+                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "boldItalic"?: bool (*bold* and _italic_ with real formatting; default false), "tabIndent"?: bool (Set left- and first-indent with tabs and backspaces; default false), "headingStyles"?: bool (Built-in Heading styles; default false), "autoAddFirstLetter"|"autoAddInitialCaps"?: bool (Automatically add words to the exception lists when an automatic capital is undone; default true), "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
             )
             .pure(),
         CommandSpec::new("tools.customizeKeyboard", "Customize Keyboard", "File › Options", customize_keyboard)
@@ -887,6 +893,8 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
     if !s.prefs.autocorrect.enabled {
         return Ok(());
     }
+    // The word without its marks goes on through the steps below ("*teh* " → "The ").
+    let outside = emphasis_autoformat(s, on_enter)?;
     let ac = s.prefs.autocorrect.clone();
     let mut f = s.sel.focus.clone();
     let Some(text) = s.doc.para_at(&f).map(|p| p.text.clone()) else { return Ok(()) };
@@ -899,10 +907,19 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
     let Some(body) = before.get(..before.len() - trigger) else { return Ok(()) };
     // The word starts after the last white-space character, whatever its width (a no-break
     // space is two bytes and an ideographic space is three).
-    let start = body.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
+    let mut start = body.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
     let Some(mut word) = body.get(start..).map(str::to_string) else { return Ok(()) };
     if word.is_empty() {
         return Ok(());
+    }
+    // The opening mark of a `*bold*` or `_italic_` span is not part of the word, so the first
+    // word of a span of several words is corrected as it is typed ("*teh end*" → "*the end*").
+    let mark = word.chars().next().filter(|c| ac.bold_italic && (*c == '*' || *c == '_'));
+    let mut opened = false;
+    if let Some(rest) = mark.and_then(|m| word.get(1..).filter(|r| !r.is_empty() && !r.contains(m))) {
+        start += 1;
+        word = rest.to_string();
+        opened = true;
     }
     // The word's language (run, paragraph style, document default) picks the replacement list
     // (#835) and the case mapping (#1923). Text with no language at all is in the editing
@@ -988,14 +1005,16 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
             c.link = Some(href.clone());
             c.style = Some("Hyperlink".into());
         })?;
-        // Typing after the link isn't part of it (but keeps the text's other formatting).
-        let mut after = s.doc.para_at(&f).map(|p| p.props_of_char(start).clone()).unwrap_or_default();
+        // Typing after the link isn't part of it (but keeps the text's other formatting, or
+        // the formatting outside a `*bold*` or `_italic_` span).
+        let mut after = outside.unwrap_or_else(|| s.doc.para_at(&f).map(|p| p.props_of_char(start).clone()).unwrap_or_default());
         after.link = None;
         after.style = None;
         s.pending = Some(after);
         return Ok(());
     }
-    let before_word = text.get(..start).unwrap_or("");
+    // A sentence starts before the opening mark, as for the word without it.
+    let before_word = text.get(..start - usize::from(opened)).unwrap_or("");
     // The first word in a table cell follows its own option; other sentences the sentence one.
     let sentence_on = if before_word.trim().is_empty() && f.path.cell().is_some() { ac.cap_cells } else { ac.cap_sentences };
     let exceptions = ac.exception_list();
@@ -1123,6 +1142,87 @@ fn case_fix(caps: &AutoCorrectPrefs, word: &str, turkic: bool) -> Option<(usize,
         return Some((at, std::iter::once(up).chain(std::iter::once(lower(b))).chain(more.iter().map(|&c| lower(c))).collect()));
     }
     None
+}
+
+/// *Bold* and _italic_ with real formatting, for the word ending at the caret (`on_enter` as for
+/// [`autocorrect_word`]): the two marks are removed and the text between them is made bold or
+/// italic, for plain and complex-script text. Returns the closing mark's formatting, which is
+/// the formatting outside the span, when anything changed.
+pub fn emphasis_autoformat(s: &mut Session, on_enter: bool) -> Result<Option<wordcraft_doc::props::CharProps>, CmdError> {
+    let Some((open, close, bold)) = emphasis_at_caret(s, on_enter) else { return Ok(None) };
+    let f = s.sel.focus.clone();
+    let para = s.doc.para_mut(f.story, &f.path)?;
+    let outside = para.props_of_char(close).clone();
+    para.delete(close, close + 1)?;
+    para.delete(open, open + 1)?;
+    para.format(open, close - 1, &|c| {
+        if bold {
+            c.bold = Some(true);
+            c.bold_cs = Some(true);
+        } else {
+            c.italic = Some(true);
+            c.italic_cs = Some(true);
+        }
+    })?;
+    s.sel = Selection::caret(Pos { off: f.off.saturating_sub(2), ..f });
+    Ok(Some(outside))
+}
+
+/// Would [`emphasis_autoformat`] change the word ending at the caret?
+pub fn has_emphasis(s: &Session, on_enter: bool) -> bool {
+    emphasis_at_caret(s, on_enter).is_some()
+}
+
+/// The `*bold*` or `_italic_` span ending at the caret (see [`emphasis_span`]) when the option is
+/// on. With Track Changes on, only the current author's tracked insertions are converted, since
+/// removing the marks from other text would not be tracked. Nothing is converted while the
+/// document limits formatting to its styles.
+fn emphasis_at_caret(s: &Session, on_enter: bool) -> Option<(usize, usize, bool)> {
+    // Formatting limited to the document's styles allows no direct bold or italic.
+    let styles_only = super::protect::enforced(&s.doc) && s.doc.settings.protect_formatting;
+    if !(s.prefs.autocorrect.enabled && s.prefs.autocorrect.bold_italic) || styles_only {
+        return None;
+    }
+    let f = &s.sel.focus;
+    let para = s.doc.para_at(f)?;
+    let before = para.text.get(..f.off)?;
+    let trigger = match before.chars().next_back() {
+        _ if on_enter => 0,
+        Some(c) if c == ' ' || ",.;:!?".contains(c) => c.len_utf8(),
+        _ => return None,
+    };
+    let span = before.get(..before.len() - trigger).and_then(emphasis_span)?;
+    let tracked = |(open, close, _): &(usize, usize, bool)| {
+        !s.doc.settings.track_changes
+            || para
+                .run_ranges()
+                .filter(|(r, _)| r.start <= *close && r.end > *open)
+                .all(|(_, p)| p.del.is_none() && p.ins.and_then(|i| s.doc.revisions.get(i as usize)).is_some_and(|rv| rv.author == s.author))
+    };
+    Some(span).filter(tracked)
+}
+
+/// The marks of a `*bold*` or `_italic_` span that `text` ends with: the byte offsets of the
+/// opening and closing mark, and whether it is bold. The opening mark starts a word (it follows
+/// the paragraph start, white space or an opening bracket or quote), the text between the marks
+/// holds a letter or digit and neither starts nor ends with white space, so `2*3*`, `file_name_`
+/// and `*?!*` stay as typed. Text holding an object (a picture, field or content control) is left
+/// alone.
+fn emphasis_span(text: &str) -> Option<(usize, usize, bool)> {
+    let mark = text.chars().next_back().filter(|c| *c == '*' || *c == '_')?;
+    let close = text.len() - 1;
+    let open = text.get(..close)?.rfind(mark)?;
+    let inner = text.get(open + 1..close)?;
+    let edge_ok = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+    if !edge_ok(inner.chars().next())
+        || !edge_ok(inner.chars().next_back())
+        || !inner.chars().any(char::is_alphanumeric)
+        || inner.contains(wordcraft_doc::para::OBJ)
+    {
+        return None;
+    }
+    let starts_word = text.get(..open)?.chars().next_back().is_none_or(|c| c.is_whitespace() || "([{\"'“‘".contains(c));
+    starts_word.then_some((open, close, mark == '*'))
 }
 
 /// Byte length of an ordinal suffix to superscript ("1st" → 2), if `word` is a correct ordinal.
