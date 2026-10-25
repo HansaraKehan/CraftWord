@@ -37,11 +37,29 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("view.readLineSpacing", "Reading Line Spacing", "Reading › Layout", read_line_spacing)
             .params(r#"{"value": "document" | 1.0 | 1.25 | 1.5 | 2.0}"#)
             .pure(),
+        CommandSpec::new("view.readPageColor", "Reading Page Color", "Reading › Layout", read_page_color)
+            .params(r#"{"value": "none" | "sepia" | "inverse"}"#)
+            .pure(),
         // Print Layout: hide the white space (margins, headers, footers) between pages. Screen only.
         CommandSpec::new("view.hideWhiteSpace", "Hide White Space", "View › Show", |s, v| toggle(s, v, |x| &mut x.hide_white_space))
             .params(r#"{"value"?: bool}"#)
             .pure(),
-        CommandSpec::new("view.focus", "Focus", "View › Immersive", |s, v| toggle(s, v, |x| &mut x.focus_mode)).pure(),
+        // Focus and Full Screen View (#1678) fill the screen; turning one on turns the other off.
+        // Full Screen View has no key of its own: Customize Keyboard binds one.
+        CommandSpec::new("view.focus", "Focus", "View › Immersive", |s, v| {
+            let r = toggle(s, v, |x| &mut x.focus_mode);
+            s.view.full_screen_view &= !s.view.focus_mode;
+            r
+        })
+        .params(r#"{"value"?: bool}"#)
+        .pure(),
+        CommandSpec::new("view.fullScreenView", "Full Screen View", "View › Immersive", |s, v| {
+            let r = toggle(s, v, |x| &mut x.full_screen_view);
+            s.view.focus_mode &= !s.view.full_screen_view;
+            r
+        })
+        .params(r#"{"value"?: bool}"#)
+        .pure(),
         CommandSpec::new("view.ruler", "Ruler", "View › Show", |s, v| toggle(s, v, |x| &mut x.ruler)).pure(),
         // The drawing grid over the page (screen only; never printed or exported).
         CommandSpec::new("view.gridlines", "Gridlines", "View › Show", |s, v| toggle(s, v, |x| &mut x.gridlines))
@@ -76,12 +94,12 @@ pub fn specs() -> Vec<CommandSpec> {
         // light and dark, as the manual switch did.
         CommandSpec::new("view.interfaceTheme", "Interface Theme", "View › Dark Mode", |s, v| match v.get("value") {
             None => {
-                s.ui_requests.push(json!({"toggle": "interfaceTheme"}));
+                s.push_ui_request(json!({"toggle": "interfaceTheme"}));
                 Ok(json!({"value": "toggle"}))
             }
             Some(Value::String(name)) => match name.as_str() {
                 "light" | "dark" | "system" => {
-                    s.ui_requests.push(json!({"interfaceTheme": name}));
+                    s.push_ui_request(json!({"interfaceTheme": name}));
                     Ok(json!({"value": name}))
                 }
                 _ => Err(CmdError::Params("interface theme: light|dark|system".into())),
@@ -100,13 +118,18 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("view.altTextPane", "Alt Text Pane", "Review › Accessibility", |s, v| toggle(s, v, |x| &mut x.alt_text_pane))
             .params(r#"{"value"?: bool}"#)
             .pure(),
+        CommandSpec::new("view.formatShapePane", "Format Shape Pane", "Shape Format › Shape Styles", |s, v| {
+            toggle(s, v, |x| &mut x.format_shape_pane)
+        })
+        .params(r#"{"value"?: bool}"#)
+        .pure(),
         CommandSpec::new("view.newWindow", "New Window", "View › Window", |s, _| {
-            s.ui_requests.push(json!({"open": "newWindow"}));
+            s.push_ui_request(json!({"open": "newWindow"}));
             sel_result(s)
         })
         .pure(),
         CommandSpec::new("view.split", "Split", "View › Window", |s, _| {
-            s.ui_requests.push(json!({"toggle": "split"}));
+            s.push_ui_request(json!({"toggle": "split"}));
             sel_result(s)
         })
         .key("Mod+Alt+S")
@@ -121,8 +144,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         CommandSpec::new("view.state", "View State", "View", |s, _| serde_json::to_value(&s.view).map_err(|e| CmdError::Failed(e.to_string())))
             .pure(),
-        // Word › File › Options › Advanced › Numeral: how digits look on screen (display
-        // only; the document text keeps the typed codepoints).
+        // Word › File › Options › Advanced › Numeral: how digits look on screen, in print, PDFs
+        // and page images (display only; the document text keeps the typed codepoints).
         CommandSpec::new("view.numeral", "Numerals", "File › Options › Advanced", |s, v| match v.get("value") {
             None => Ok(json!({"value": s.view.numeral})),
             Some(Value::String(name)) => {
@@ -151,6 +174,7 @@ fn mode(s: &mut Session, m: ViewMode, read: bool) -> CmdResult {
         s.view.read_column_width = None;
         s.view.read_zoom = 1.0;
         s.view.read_line_spacing = None;
+        s.view.read_page_color = ReadPageColor::None;
     }
     s.view.mode = m;
     s.view.read_mode = read;
@@ -191,6 +215,31 @@ fn read_line_spacing(s: &mut Session, v: &Value) -> CmdResult {
     };
     s.view.read_line_spacing = spacing;
     Ok(json!({"spacing": spacing}))
+}
+
+/// Read Mode › View › Page Color, as in Word. Screen only: the document and its own page color
+/// are unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadPageColor {
+    /// White paper; the document's page color and page picture are not shown.
+    #[default]
+    None,
+    /// Sepia paper (Word's RGB 112, 66, 20 at 80% transparency over white); the text keeps its colors.
+    Sepia,
+    /// A dark page with light text, as View › Switch Modes draws it.
+    Inverse,
+}
+
+fn read_page_color(s: &mut Session, v: &Value) -> CmdResult {
+    let color = match v.get("value").and_then(Value::as_str) {
+        Some("none") => ReadPageColor::None,
+        Some("sepia") => ReadPageColor::Sepia,
+        Some("inverse") => ReadPageColor::Inverse,
+        _ => return Err(CmdError::Params("reading page color must be none, sepia, or inverse".into())),
+    };
+    s.view.read_page_color = color;
+    Ok(json!({"pageColor": color}))
 }
 
 /// The zoom a document is saved with (#995): the fit mode, else the percentage; `None` at 100%.
@@ -236,7 +285,7 @@ fn zoom(s: &mut Session, v: &Value) -> CmdResult {
             s.view.multi_page = false;
         }
         None => {
-            s.ui_requests.push(json!({"open": "zoom"}));
+            s.push_ui_request(json!({"open": "zoom"}));
         }
     }
     Ok(json!({"zoom": s.view.zoom, "fit": s.view.fit}))

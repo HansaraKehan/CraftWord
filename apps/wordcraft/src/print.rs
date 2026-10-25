@@ -13,11 +13,11 @@ pub fn discover() -> Discover {
 }
 
 // Keep submission workers reachable until normal app shutdown; dropping a JoinHandle would
-// let process exit kill PowerShell/CUPS before it hands the job to the spooler.
+// let process exit end an in-process Windows job or the CUPS hand-off before the spooler has it.
 static JOBS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
 
 pub fn finish_pending_jobs() {
-    let workers = std::mem::take(&mut *JOBS.lock().unwrap_or_else(|poison| poison.into_inner()));
+    let workers = std::mem::take(&mut *JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     for worker in workers {
         if worker.join().is_err() {
             log::error!("the print worker stopped unexpectedly during shutdown");
@@ -46,7 +46,7 @@ pub fn submit() -> Submit {
             let _ = sender.send(craft_print::submit(&bytes, &job).map_err(|error| error.to_string()));
         });
         if let Ok(worker) = worker {
-            let mut jobs = JOBS.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut jobs = JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             jobs.retain(|job| !job.is_finished());
             jobs.push(worker);
         }

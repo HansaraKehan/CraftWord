@@ -9,7 +9,7 @@
 //! or not (a repeated name), data is checked before it's copied, and nesting and elements are
 //! capped as the XML tree reader caps a part's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::Engine as _;
 use quick_xml::events::{BytesStart, Event};
@@ -340,14 +340,21 @@ fn with_scope(frag: &[u8], scope: &[Vec<(String, String)>]) -> Vec<u8> {
     let rest = frag.get(open..).unwrap_or_default();
     let name_end = rest.iter().position(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/').unwrap_or(rest.len());
     let tag_end = rest.iter().position(|b| *b == b'>').unwrap_or(rest.len());
-    let tag = rest.get(..tag_end).unwrap_or_default();
+    let tag = String::from_utf8_lossy(rest.get(1..tag_end).unwrap_or_default());
+    let start = BytesStart::from_content(tag.as_ref(), name_end.saturating_sub(1));
+    let declared: HashSet<Vec<u8>> = start
+        .attributes()
+        .with_checks(false)
+        .flatten()
+        .filter(|a| a.key.as_ref() == b"xmlns" || a.key.as_ref().starts_with(b"xmlns:"))
+        .map(|a| a.key.as_ref().to_vec())
+        .collect();
     let mut out = Vec::with_capacity(rest.len() + 256);
     out.extend_from_slice(rest.get(..name_end).unwrap_or_default());
     // Innermost declarations win: walk from the data element out, skipping prefixes seen.
     let mut seen: Vec<&str> = Vec::new();
     for (k, v) in decls.iter().rev() {
-        let declared = tag.windows(k.len() + 1).any(|w| w.get(..k.len()) == Some(k.as_bytes()) && matches!(w.last(), Some(b'=' | b' ')));
-        if declared || seen.contains(&k.as_str()) {
+        if declared.contains(k.as_bytes()) || seen.contains(&k.as_str()) {
             continue;
         }
         seen.push(k);
@@ -461,6 +468,15 @@ mod tests {
         let own = b"<w:document xmlns:w=\"urn:own\"/>";
         assert_eq!(with_scope(own, &scope), own.to_vec());
         assert_eq!(with_scope(b"no element", &scope), b"no element".to_vec());
+    }
+
+    #[test]
+    fn inherited_namespaces_do_not_rescan_a_long_root_tag() {
+        let scope = vec![(0..256).map(|i| (format!("xmlns:p{i}"), format!("urn:{i}"))).collect::<Vec<_>>()];
+        let frag = format!("<w:document{}><w:body/></w:document>", " a=\"1\"".repeat(4_000_000));
+        let out = with_scope(frag.as_bytes(), &scope);
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.matches("xmlns:p").count(), 256);
     }
 
     #[test]

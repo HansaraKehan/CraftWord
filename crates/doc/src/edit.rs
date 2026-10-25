@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::para::InlineObject;
 use crate::props::{CharProps, ParaProps};
 use crate::{Block, Blocks, DocError, Document, Paragraph, Part, PartKind, Path, Pos, Result, para_block};
+use crate::{Table, table::MAX_TABLE_DEPTH};
 
 /// A copied piece of a document: blocks, where the first and last paragraphs may be partial.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -134,6 +135,53 @@ fn deeper_than_walk(b: &Block, depth: usize) -> bool {
 
 fn order(a: &Pos, b: &Pos) -> (Pos, Pos) {
     if a <= b { (a.clone(), b.clone()) } else { (b.clone(), a.clone()) }
+}
+
+/// The blocks in `t`'s cells, row by row.
+fn cell_blocks(t: &Table) -> impl DoubleEndedIterator<Item = &Block> {
+    t.rows.iter().flat_map(|r| r.cells.iter()).flat_map(|c| c.blocks.iter()).map(|b| &**b)
+}
+
+/// How many tables deep `t` goes, itself included: 1 when its cells hold no table (without
+/// recursion: a pasted fragment may be deep).
+fn table_height(t: &Table) -> usize {
+    let mut most = 1;
+    let mut stack: Vec<(&Block, usize)> = cell_blocks(t).map(|b| (b, 1)).collect();
+    while let Some((b, d)) = stack.pop() {
+        if let Block::Table(inner) = b {
+            let d = d.saturating_add(1);
+            most = most.max(d);
+            stack.extend(cell_blocks(inner).map(|cb| (cb, d)));
+        }
+    }
+    most
+}
+
+/// `b` as blocks nesting at most `room` tables deep: a table that would go deeper is replaced by
+/// its paragraphs (tables in its cells too, document order), as the DOCX reader does.
+fn fit_tables(b: Block, room: usize, out: &mut Vec<Block>) {
+    match b {
+        Block::Table(t) if room == 0 => {
+            let mut stack: Vec<&Block> = cell_blocks(&t).rev().collect();
+            while let Some(cb) = stack.pop() {
+                match cb {
+                    Block::Para(p) => out.push(Block::Para(p.clone())),
+                    Block::Table(inner) => stack.extend(cell_blocks(inner).rev()),
+                }
+            }
+        }
+        Block::Table(mut t) if table_height(&t) > room => {
+            for cell in t.rows.iter_mut().flat_map(|r| r.cells.iter_mut()) {
+                let mut kept = Vec::new();
+                for cb in std::mem::take(&mut cell.blocks) {
+                    fit_tables(Arc::unwrap_or_clone(cb), room.saturating_sub(1), &mut kept);
+                }
+                cell.blocks = kept.into_iter().map(Arc::new).collect();
+            }
+            out.push(Block::Table(t));
+        }
+        b => out.push(b),
+    }
 }
 
 /// Nesting limit when following text boxes inside text boxes.
@@ -361,8 +409,14 @@ impl Document {
         Ok(Pos { story: pos.story, path: pos.path.with_last(i + 1), off: 0 })
     }
 
-    /// Insert a block before the block at `path` (same container).
+    /// Insert a block before the block at `path` (same container). A table that would nest
+    /// deeper than [`MAX_TABLE_DEPTH`] is refused.
     pub fn insert_block(&mut self, story: crate::StoryRef, path: &Path, block: Block) -> Result<()> {
+        if let Block::Table(t) = &block
+            && path.depth().saturating_add(table_height(t)) > MAX_TABLE_DEPTH
+        {
+            return Err(DocError::Invalid(format!("tables can't nest more than {MAX_TABLE_DEPTH} deep")));
+        }
         let i = path.last();
         let bl = self.container_mut(story, path)?;
         if i > bl.len() {
@@ -736,7 +790,12 @@ impl Document {
 
     /// Insert a fragment at `pos`; returns the position after the pasted content.
     pub fn insert_fragment(&mut self, pos: &Pos, frag: &Fragment) -> Result<Pos> {
-        let mut blocks = frag.blocks.clone();
+        // Tables that would nest deeper than the limit here become their paragraphs (#1596).
+        let room = MAX_TABLE_DEPTH.saturating_sub(pos.path.depth());
+        let mut blocks = Vec::with_capacity(frag.blocks.len());
+        for b in frag.blocks.iter().cloned() {
+            fit_tables(b, room, &mut blocks);
+        }
         if blocks.is_empty() {
             return Ok(pos.clone());
         }
@@ -939,6 +998,73 @@ mod tests {
         let e = d.insert_fragment(&Pos::body(0, 0), &one).unwrap();
         assert_eq!(e, Pos::body(0, 2));
         assert!(d.plain_text(StoryRef::Body).starts_with("XYalpha"));
+    }
+
+    /// The first paragraph of the deepest cell, following the first table at each level.
+    fn deepest(d: &Document) -> Path {
+        let (mut path, mut blocks) = (Vec::new(), &d.body);
+        while let Some((i, t)) = blocks.iter().enumerate().find_map(|(i, b)| if let Block::Table(t) = &**b { Some((i, t)) } else { None }) {
+            path.extend([i as u32, 0, 0]);
+            blocks = &t.rows[0].cells[0].blocks;
+        }
+        path.push(0);
+        Path(path)
+    }
+
+    fn body_height(d: &Document) -> usize {
+        d.body.iter().filter_map(|b| if let Block::Table(t) = &**b { Some(table_height(t)) } else { None }).max().unwrap_or(0)
+    }
+
+    /// How many times `c` is in `blocks`, the deepest cells too.
+    fn count(blocks: &[Arc<Block>], c: char) -> usize {
+        blocks
+            .iter()
+            .map(|b| match &**b {
+                Block::Para(p) => p.text.matches(c).count(),
+                Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).map(|cell| count(&cell.blocks, c)).sum(),
+            })
+            .sum()
+    }
+
+    #[test]
+    fn tables_nest_at_most_max_table_depth() {
+        let mut d = doc(&["x", ""]);
+        for _ in 0..MAX_TABLE_DEPTH {
+            let at = deepest(&d);
+            d.insert_block(StoryRef::Body, &at, Block::Table(Table::new(1, 1, 100.0))).unwrap();
+        }
+        assert_eq!(body_height(&d), MAX_TABLE_DEPTH);
+        // One more in the deepest cell is refused and changes nothing; a paragraph is fine.
+        let (at, before) = (deepest(&d), d.clone());
+        assert_eq!(at.depth(), MAX_TABLE_DEPTH);
+        assert!(d.insert_block(StoryRef::Body, &at, Block::Table(Table::new(1, 1, 100.0))).is_err());
+        assert_eq!(d, before);
+        d.insert_block(StoryRef::Body, &at, Block::Para(Paragraph::new())).unwrap();
+        // One level up, a table fits but a table holding a table doesn't.
+        let up = Path(at.0[..at.0.len() - 3].to_vec());
+        let mut two = Table::new(1, 1, 100.0);
+        two.rows[0].cells[0].blocks.insert(0, Arc::new(Block::Table(Table::new(1, 1, 100.0))));
+        assert!(d.insert_block(StoryRef::Body, &up, Block::Table(two)).is_err());
+        d.insert_block(StoryRef::Body, &up, Block::Table(Table::new(1, 1, 100.0))).unwrap();
+        assert_eq!(body_height(&d), MAX_TABLE_DEPTH);
+    }
+
+    #[test]
+    fn pasting_a_table_into_its_own_cell_stops_at_max_table_depth() {
+        // #1596: copy everything and paste it into the deepest cell, again and again: each round
+        // doubled the nesting, until saving, copying or closing the document overflowed the stack.
+        let mut d = doc(&["x", ""]);
+        d.insert_block(StoryRef::Body, &Path::top(1), Block::Table(Table::new(1, 1, 100.0))).unwrap();
+        d.insert_text(&Pos { story: StoryRef::Body, path: Path(vec![1, 0, 0, 0]), off: 0 }, "a", &CharProps::default()).unwrap();
+        for _ in 0..8 {
+            let all = d.copy_range(&Pos::body(0, 0), &Pos::body(d.body.len() - 1, 0));
+            let at = deepest(&d);
+            let off = d.para(StoryRef::Body, &at).map_or(0, Paragraph::len);
+            d.insert_fragment(&Pos { story: StoryRef::Body, path: at, off }, &all).unwrap();
+        }
+        assert_eq!(body_height(&d), MAX_TABLE_DEPTH);
+        // Nothing is lost: every copy's text is there, below the limit as paragraphs.
+        assert_eq!((count(&d.body, 'x'), count(&d.body, 'a')), (256, 256));
     }
 
     fn text_box(d: &mut Document, pos: &Pos, text: &str) -> u32 {

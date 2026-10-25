@@ -266,6 +266,11 @@ impl Writer {
                 }
                 Inline::Anchor(name) => o.push_str(&format!("\\hypertarget{{{}}}{{}}", escape_url(name))),
                 Inline::Figure(_) => {}
+                // LaTeX keeps no ruby (no package): its base text, in the run's formatting.
+                Inline::Ruby { base, fmt, .. } => {
+                    let s = self.span(base, fmt);
+                    o.push_str(&s);
+                }
                 Inline::Equation { linear, display } => {
                     self.uses.math = true;
                     let src = linear_to_latex(linear);
@@ -339,8 +344,17 @@ impl Writer {
             vec![LINE_WIDTH / cols as f32; cols]
         };
         let col = |w: f32| format!("p{{{}pt}}", num((w - 2.0 * TABCOLSEP).max(12.0)));
-        let spec: String = widths.iter().map(|w| format!("{}|", col(*w))).collect();
-        let mut o = format!("\\noindent\\begin{{tabular}}{{|{spec}}}\n\\hline\n");
+        let spec: String = if t.borderless {
+            widths.iter().map(|w| col(*w)).collect::<Vec<_>>().join(" ")
+        } else {
+            let s: String = widths.iter().map(|w| format!("{}|", col(*w))).collect();
+            format!("|{s}")
+        };
+        let mut o = if t.borderless {
+            format!("\\noindent\\begin{{tabular}}{{{spec}}}\n")
+        } else {
+            format!("\\noindent\\begin{{tabular}}{{{spec}}}\n\\hline\n")
+        };
         for row in &t.rows {
             let mut cells = Vec::new();
             let mut g = 0usize;
@@ -357,8 +371,13 @@ impl Writer {
                     body = format!("\\cellcolor[HTML]{{{}}}{body}", hex(sh));
                 }
                 if span > 1 {
-                    let left = if g == 0 { "|" } else { "" };
-                    body = format!("\\multicolumn{{{span}}}{{{left}{}|}}{{{body}}}", col(w));
+                    let col_spec = if t.borderless {
+                        col(w)
+                    } else {
+                        let left = if g == 0 { "|" } else { "" };
+                        format!("{left}{}|", col(w))
+                    };
+                    body = format!("\\multicolumn{{{span}}}{{{col_spec}}}{{{body}}}");
                 }
                 cells.push(body);
                 g += span;
@@ -367,7 +386,11 @@ impl Writer {
                 continue;
             }
             o.push_str(&cells.join(" & "));
-            o.push_str(" \\\\\n\\hline\n");
+            if t.borderless {
+                o.push_str(" \\\\\n");
+            } else {
+                o.push_str(" \\\\\n\\hline\n");
+            }
         }
         o.push_str("\\end{tabular}\n");
         self.out.push_str(&o);
@@ -584,6 +607,8 @@ const MATH_SYMBOLS: &[(char, &str)] = &[
     ('⌈', "lceil"),
     ('⌉', "rceil"),
     ('°', "circ"),
+    ('•', "bullet"),
+    ('⊤', "top"),
 ];
 
 /// Extra input spellings mapped to the same symbols.
@@ -610,6 +635,9 @@ const MATH_ALIASES: &[(&str, char)] = &[
     ("Vert", '‖'),
     ("lvert", '|'),
     ("rvert", '|'),
+    ("bot", '⊥'),
+    ("hslash", 'ℏ'),
+    ("colon", ':'),
 ];
 
 /// Operator names written upright in both formats.
@@ -750,13 +778,13 @@ fn linear_to_latex_at(linear: &str, depth: usize) -> String {
                     o.push('\\');
                     o.push_str(&name);
                     i += 1 + name.len();
-                    if chars.get(i).is_some_and(|n| n.is_ascii_alphabetic()) {
+                    if chars.get(i).is_some_and(char::is_ascii_alphabetic) {
                         o.push(' ');
                     }
                 }
                 continue;
             }
-            '%' | '#' | '&' | '$' => {
+            '#'..='&' => {
                 o.push('\\');
                 o.push(c);
             }
@@ -768,7 +796,7 @@ fn linear_to_latex_at(linear: &str, depth: usize) -> String {
                     o.push('\\');
                     o.push_str(name);
                     // A control word needs a space only before a letter.
-                    if chars.get(i + 1).is_some_and(|n| n.is_ascii_alphabetic()) {
+                    if chars.get(i + 1).is_some_and(char::is_ascii_alphabetic) {
                         o.push(' ');
                     }
                 }
@@ -965,7 +993,7 @@ fn math_seq(t: &[MTok], pos: &mut usize, depth: usize, in_opt: bool) -> String {
                         }
                     }
                     "text" | "textrm" | "textit" | "textbf" | "mathrm" | "mathit" | "mathbf" | "mathsf" | "mathtt" | "mathcal" | "mathbb"
-                    | "mathfrak" | "boldsymbol" | "operatorname" | "mbox" | "hbox" | "displaystyle" | "textstyle" | "scriptstyle" => {
+                    | "mathfrak" | "boldsymbol" | "bm" | "pmb" | "operatorname" | "mbox" | "hbox" | "displaystyle" | "textstyle" | "scriptstyle" => {
                         if t.get(*pos) == Some(&MTok::Open) || !matches!(name, "displaystyle" | "textstyle" | "scriptstyle") {
                             let a = math_arg(t, pos, depth);
                             o.push_str(&a);
@@ -977,6 +1005,15 @@ fn math_seq(t: &[MTok], pos: &mut usize, depth: usize, in_opt: bool) -> String {
                     "vec" => o.push_str(&format!("{}⃗", math_arg(t, pos, depth))),
                     "dot" => o.push_str(&format!("{}̇", math_arg(t, pos, depth))),
                     "ddot" => o.push_str(&format!("{}̈", math_arg(t, pos, depth))),
+                    "acute" => o.push_str(&format!("{}́", math_arg(t, pos, depth))),
+                    "grave" => o.push_str(&format!("{}̀", math_arg(t, pos, depth))),
+                    "breve" => o.push_str(&format!("{}̆", math_arg(t, pos, depth))),
+                    "check" => o.push_str(&format!("{}̌", math_arg(t, pos, depth))),
+                    "pmod" => {
+                        let a = math_arg(t, pos, depth);
+                        o.push_str(&format!(" (mod {a})"));
+                    }
+                    "bmod" => o.push_str(" mod "),
                     "begin" | "end" => {
                         // Inner environments (`matrix`, `cases`, `aligned`…): keep the content.
                         let _ = math_arg(t, pos, depth);
@@ -1669,11 +1706,14 @@ fn parse_color(model: Option<&str>, spec: &str) -> Option<Rgb> {
 
 /// A TeX length in points (`3cm`, `0.4\linewidth`), if it is one.
 fn length_pt(s: &str) -> Option<f32> {
-    let s = s.trim();
+    let s = s.trim().strip_prefix('+').unwrap_or(s.trim());
     let split = s.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).unwrap_or(s.len());
     let (n, unit) = s.split_at(split);
     let n: f32 = if n.is_empty() { 1.0 } else { n.parse().ok()? };
-    let k = match unit.trim() {
+    let unit = unit.trim();
+    // Macro names are case-sensitive (`\TEXTWIDTH` is not `\textwidth`); unit keywords are not.
+    let unit = if unit.starts_with('\\') { unit.to_owned() } else { unit.to_ascii_lowercase() };
+    let k = match unit.as_str() {
         "pt" => 1.0,
         "bp" => 72.27 / 72.0,
         "in" => 72.27,
@@ -2172,7 +2212,13 @@ impl<'a> Parser<'a> {
             let mut chars = arg.chars();
             let s = match chars.next() {
                 Some(b) => format!("{}{}", compose(b, mark), chars.as_str()),
-                None => mark.to_string(),
+                // An accent over nothing prints the accent alone: the spacing form of the mark.
+                None => match name {
+                    "`" | "^" | "~" => name.to_string(),
+                    "'" => "\u{B4}".to_string(),
+                    "\"" => "\u{A8}".to_string(),
+                    _ => mark.to_string(),
+                },
             };
             self.text(&s);
             return;
@@ -2538,6 +2584,7 @@ fn raw_text(toks: &[Tok]) -> String {
                 }
             },
             Tok::Verb(v) | Tok::Math(v, _) => s.push_str(v),
+            Tok::Amp => s.push('&'),
             _ => {}
         }
     }
@@ -2578,6 +2625,7 @@ fn source_text(toks: &[Tok]) -> String {
 /// A `tabular` body as a table.
 fn table(toks: &[Tok], spec: &str, depth: usize) -> FTable {
     let (spec_cols, widths) = spec_widths(spec);
+    let mut has_rules = spec.contains('|');
     // Split rows at `\\` and cells at `&`, outside braces and nested environments.
     let mut rows: Vec<Vec<&[Tok]>> = Vec::new();
     let mut row: Vec<&[Tok]> = Vec::new();
@@ -2590,6 +2638,9 @@ fn table(toks: &[Tok], spec: &str, depth: usize) -> FTable {
             Tok::Close => brace = brace.saturating_sub(1),
             Tok::Begin(_) => env += 1,
             Tok::End(_) => env = env.saturating_sub(1),
+            Tok::Cmd(c) if brace == 0 && env == 0 && matches!(c.as_str(), "hline" | "cline" | "toprule" | "midrule" | "bottomrule") => {
+                has_rules = true;
+            }
             Tok::Amp if brace == 0 && env == 0 => {
                 row.push(toks.get(start..i).unwrap_or_default());
                 start = i + 1;
@@ -2611,7 +2662,7 @@ fn table(toks: &[Tok], spec: &str, depth: usize) -> FTable {
     if !row.is_empty() {
         rows.push(row);
     }
-    let mut out = FTable { rows: Vec::new(), widths: Vec::new(), borderless: false };
+    let mut out = FTable { rows: Vec::new(), widths: Vec::new(), borderless: !has_rules };
     // Rows still covered by a `\multirow` above, per grid column.
     let mut covering: Vec<u32> = Vec::new();
     for r in rows {
@@ -2782,6 +2833,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_accent_group_is_plain_character() {
+        let t = texts("\\begin{document}x\\^{}y \\~{}z 2\\^{}10 \\texttt{\\~{}/dir}\\end{document}");
+        assert_eq!(t, vec!["x^y ~z 2^10 ~/dir".to_string()]);
+        // The acute and the diaeresis alone are accents, not an apostrophe or a quotation mark.
+        assert_eq!(texts("\\begin{document}\\'{} \\\"{}\\end{document}"), vec!["\u{B4} \u{A8}".to_string()]);
+    }
+
+    #[test]
     fn unclosed_begin_keeps_its_brace() {
         // `env_name` used to consume the `{` before giving up on a missing `}`.
         let toks = tokenize("\\begin{ x");
@@ -2802,6 +2861,15 @@ mod tests {
         let (cols, widths) = spec_widths(&wide);
         assert_eq!(cols, wordcraft_doc::table::MAX_COLS);
         assert!(widths.len() <= wordcraft_doc::table::MAX_COLS);
+    }
+
+    #[test]
+    fn latex_length_pt_case_and_plus() {
+        assert_eq!(length_pt("12pt"), Some(12.0));
+        assert_eq!(length_pt("12PT"), Some(12.0));
+        assert_eq!(length_pt("+12pt"), Some(12.0));
+        assert_eq!(length_pt("1IN"), Some(72.27));
+        assert_eq!(length_pt("+2cm"), Some(56.9));
     }
 
     const ARTICLE: &str = r#"\documentclass[11pt]{article}
@@ -2992,6 +3060,14 @@ Caf\'e na\"ive \c{c}a \v{s}\'{e} and {\bfseries grouped bold} after.
             (r"\left( a \right)", "( a )"),
             (r"\sin x + \text{if } y", "sin x + if y"),
             (r"a \cdot b \times c \neq d", "a ⋅ b × c ≠ d"),
+            (r"a \bullet b", "a • b"),
+            (r"x \top y \bot z", "x ⊤ y ⊥ z"),
+            (r"f \colon X \to Y", "f : X → Y"),
+            (r"\hbar \hslash", "ℏ ℏ"),
+            (r"\bm{v}", "v"),
+            (r"\acute{x} \grave{y} \breve{z} \check{w}", "x́ ỳ z̆ w̌"),
+            (r"a \equiv b \pmod{m}", "a ≡ b (mod m)"),
+            (r"a \bmod b", "a mod b"),
             (r"\unknowncmd", r"\unknowncmd"),
         ] {
             assert_eq!(latex_to_linear(tex), linear, "{tex}");
@@ -3001,6 +3077,8 @@ Caf\'e na\"ive \c{c}a \v{s}\'{e} and {\bfseries grouped bold} after.
             ("α ≤ β", r"\alpha \leq \beta"),
             ("αβ", r"\alpha\beta"),
             ("πr", r"\pi r"),
+            ("a • b", r"a \bullet b"),
+            ("x ⊤ y", r"x \top y"),
             ("a_(i+1)", r"a_{i+1}"),
             ("50% & #", r"50\% \& \#"),
             ("√(3&x)", r"\sqrt[3]{x}"),
@@ -3092,5 +3170,68 @@ Caf\'e na\"ive \c{c}a \v{s}\'{e} and {\bfseries grouped bold} after.
                 Fmt { link: Some("https://example.com/~user/page".to_string()), ..Default::default() }
             )
         );
+    }
+
+    #[test]
+    fn exported_borderless_tables_omit_rules() {
+        let mut t = FTable { rows: Vec::new(), widths: vec![100.0, 200.0], borderless: true };
+        let cell = |s: &str| Cell {
+            blocks: vec![FBlock::Para({
+                let mut p = Para::default();
+                p.push_text(s, &Fmt::default());
+                p
+            })],
+            ..Default::default()
+        };
+        t.rows.push(vec![cell("a"), cell("b")]);
+        t.rows.push(vec![Cell { colspan: 2, ..cell("wide") }]);
+        let mut w = Writer::default();
+        w.table(&t);
+        assert!(w.out.contains("\\begin{tabular}{p{88pt} p{188pt}}"), "{}", w.out);
+        assert!(!w.out.contains("\\hline"), "{}", w.out);
+        assert!(w.out.contains("\\multicolumn{2}{p{288pt}}{wide}"), "{}", w.out);
+        let back = parse(&w.out);
+        let FBlock::Table(bt) = &back.blocks[0] else { panic!() };
+        assert!(bt.borderless, "parsed table should be borderless");
+        assert_eq!(bt.widths, vec![100.0, 200.0]);
+        assert_eq!(bt.rows[1][0].colspan, 2);
+    }
+
+    #[test]
+    fn table_borders_and_borderless_round_trip() {
+        use std::sync::Arc;
+        use wordcraft_doc::{Block, CharProps, Paragraph, Table, para_block};
+
+        // 1. Borderless table.
+        let mut doc = Document::new();
+        let mut t_borderless = Table::new(2, 2, 400.0);
+        t_borderless.props.style = None;
+        for r in 0..2 {
+            for c in 0..2 {
+                t_borderless.rows[r].cells[c].blocks = vec![para_block(Paragraph::with_text("cell", CharProps::default()))];
+            }
+        }
+        doc.body = vec![Arc::new(Block::Table(t_borderless))];
+        let tex = export(&doc);
+        assert!(!tex.contains("\\hline"));
+        let back = import(tex.as_bytes());
+        let Some(Block::Table(bt)) = back.body.first().map(|b| &**b) else { panic!() };
+        assert!(bt.props.style.is_none(), "imported table should remain borderless");
+
+        // 2. Bordered table.
+        let mut doc_bordered = Document::new();
+        let mut t_bordered = Table::new(2, 2, 400.0);
+        t_bordered.props.style = Some("TableGrid".to_string());
+        for r in 0..2 {
+            for c in 0..2 {
+                t_bordered.rows[r].cells[c].blocks = vec![para_block(Paragraph::with_text("cell", CharProps::default()))];
+            }
+        }
+        doc_bordered.body = vec![Arc::new(Block::Table(t_bordered))];
+        let tex_bordered = export(&doc_bordered);
+        assert!(tex_bordered.contains("\\hline"));
+        let back_bordered = import(tex_bordered.as_bytes());
+        let Some(Block::Table(bt_bordered)) = back_bordered.body.first().map(|b| &**b) else { panic!() };
+        assert!(bt_bordered.props.style.is_some(), "imported table should remain bordered");
     }
 }

@@ -243,14 +243,15 @@ fn autofit(s: &mut Session, v: &Value) -> CmdResult {
 pub(crate) fn sync_cell_widths(t: &mut Table) {
     let grid = t.grid.clone();
     for row in &mut t.rows {
-        let mut g = 0usize;
+        // A row's cells start after the grid columns it skips (`w:gridBefore`).
+        let mut g = row.first_grid();
         for c in &mut row.cells {
             let span = c.span();
             let w: f32 = grid.get(g..g.saturating_add(span).min(grid.len())).unwrap_or(&[]).iter().sum();
             if w > 0.0 {
                 c.props.width = Some(w);
             }
-            g += span;
+            g = g.saturating_add(span);
         }
     }
 }
@@ -516,6 +517,9 @@ pub(super) fn col(s: &mut Session, right: bool) -> CmdResult {
         let k = before / total;
         t.grid.iter_mut().for_each(|w| *w *= k);
     }
+    // The inserted cells carry the pre-scale column width, and the layout prefers a cell width
+    // over the grid: sync them, or the shrink never reaches the layout or the saved `w:tcW`.
+    sync_cell_widths(t);
     fix_caret(s, &tp, r, if right { c + 1 } else { c })
 }
 
@@ -613,6 +617,57 @@ pub(crate) fn backspace_cells(s: &mut Session) -> Option<CmdResult> {
     };
     s.column = None;
     Some(r)
+}
+
+/// Delete with whole cells selected (#2802): each cell is emptied to one empty paragraph, as in
+/// Word, nested tables included. That paragraph keeps the formatting of the cell's last one (its
+/// mark is the end-of-cell mark). `None` without whole cells, and with Track Changes on (the text
+/// is marked deleted as for any selection).
+pub(crate) fn clear_cells(s: &mut Session) -> Option<CmdResult> {
+    if s.doc.settings.track_changes {
+        return None;
+    }
+    let cr = s.cell_range()?.clone();
+    let t = s.doc.table(cr.story, &cr.table)?;
+    let prefixes: Vec<Vec<u32>> = cr.cells(t).into_iter().map(|(r, c)| cell_prefix(&cr.table, r, c)).collect();
+    let spans = text_spans(s, cr.story, &prefixes);
+    Some(clear_spans(s, cr.table.0.len().saturating_add(2), &spans))
+}
+
+/// Empty each span (one cell's text, from its first paragraph to its last; the cell's path is the
+/// first `depth` steps of its paths) to one paragraph with the last paragraph's formatting, bottom
+/// up so earlier spans stay valid; the caret goes to the start of the first cell.
+fn clear_spans(s: &mut Session, depth: usize, spans: &[(Pos, Pos)]) -> CmdResult {
+    // A cell's first block (its first paragraph may have been in a nested table that goes).
+    let first_block = |p: &Pos| {
+        let mut v = p.path.0.get(..depth).unwrap_or_default().to_vec();
+        v.push(0);
+        Pos { story: p.story, path: Path(v), off: 0 }
+    };
+    for (a, b) in spans {
+        super::controls::check_delete(s, a, b)?;
+    }
+    for (a, b) in spans.iter().rev() {
+        let Some(last) = s.doc.para(b.story, &b.path).map(|p| (p.props.clone(), p.mark.clone())) else { continue };
+        s.doc.delete_range(a, b)?;
+        // Now the cell's only block, unless it holds a table nested deeper than the paragraph
+        // walk (`delete_range` leaves those).
+        let first = first_block(a);
+        if s.doc.container(first.story, &first.path).is_some_and(|bl| bl.len() == 1)
+            && let Ok(p) = s.doc.para_mut(first.story, &first.path)
+        {
+            (p.props, p.mark) = last;
+            p.touch();
+        }
+    }
+    let at = spans.first().map(|(a, _)| s.doc.clamp(&first_block(a))).unwrap_or_else(|| s.sel.focus.clone());
+    s.sel = Selection::caret(at);
+    s.column = None;
+    s.column_mode = false;
+    s.goal_x = None;
+    s.pending = None;
+    super::controls::restore_placeholder(s)?;
+    sel_result(s)
 }
 
 fn del_table(s: &mut Session, _: &Value) -> CmdResult {
@@ -1234,6 +1289,67 @@ pub fn text_table_cells(lines: &[String], sep: Option<char>, columns: Option<usi
     (rows, cols)
 }
 
+/// The cells Convert Text to Table makes of `paras`, row by row, and the column count, as
+/// [`text_table_cells`] makes them of their text. Each cell is its field of the source paragraph
+/// cut out of it, trimmed of surrounding white space, so its formatting, objects (pictures,
+/// fields, notes…) and tracked changes go with it.
+fn text_table_paras(paras: Vec<Paragraph>, sep: Option<char>, columns: Option<usize>) -> Result<(Vec<Vec<Paragraph>>, usize), CmdError> {
+    use wordcraft_doc::para::OBJ;
+    use wordcraft_doc::table::MAX_COLS;
+    // Each paragraph's fields as byte ranges; an object is never a separator.
+    let fields: Vec<Vec<std::ops::Range<usize>>> = paras
+        .iter()
+        .map(|p| {
+            let mut out = Vec::new();
+            let mut from = 0;
+            if let Some(sep) = sep.filter(|c| *c != OBJ) {
+                for (i, c) in p.text.char_indices().filter(|(_, c)| *c == sep) {
+                    out.push(from..i);
+                    from = i + c.len_utf8();
+                }
+            }
+            out.push(from..p.text.len());
+            out
+        })
+        .collect();
+    let cols = match sep {
+        None => columns.unwrap_or(1).clamp(1, MAX_COLS),
+        Some(_) => columns.unwrap_or_else(|| fields.iter().map(Vec::len).max().unwrap_or(1)).max(1),
+    };
+    let per_row = cols.min(MAX_COLS);
+    let mut rows: Vec<Vec<Paragraph>> = Vec::new();
+    let mut row: Vec<Paragraph> = Vec::new();
+    for (mut work, ranges) in paras.into_iter().zip(fields) {
+        // The section break stays out of the cells.
+        work.section = None;
+        let mut pieces = Vec::with_capacity(ranges.len());
+        // Last field first, so the earlier offsets stay valid.
+        for r in ranges.into_iter().rev() {
+            let field = work.text.get(r.clone()).unwrap_or("");
+            let start = r.start + (field.len() - field.trim_start().len());
+            let end = (r.start + field.trim_end().len()).max(start);
+            let mut piece = work.split_off(start)?;
+            piece.split_off(end - start)?;
+            pieces.push(piece);
+        }
+        pieces.reverse();
+        for piece in pieces {
+            row.push(piece);
+            if row.len() == per_row {
+                rows.push(std::mem::take(&mut row));
+            }
+        }
+        // With a separator, each paragraph starts a row.
+        if sep.is_some() && !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    Ok((rows, cols))
+}
+
 /// Word's largest Initial column width, 22 in, in points.
 const MAX_INITIAL_WIDTH: f64 = 22.0 * 72.0;
 
@@ -1265,8 +1381,10 @@ fn from_text(s: &mut Session, v: &Value) -> CmdResult {
     };
     let columns = p::u64(v, "columns").map(|n| n.clamp(1, wordcraft_doc::table::MAX_COLS as u64) as usize);
     let (a, b) = s.sel.ordered();
-    let lines = text_table_lines(s)?;
-    let (cells, cols) = text_table_cells(&lines, sep, columns);
+    // Checks the selection: only paragraphs, a table between them is refused.
+    text_table_lines(s)?;
+    let paras: Vec<Paragraph> = (a.path.last()..=b.path.last()).filter_map(|i| s.doc.para(a.story, &a.path.with_last(i)).cloned()).collect();
+    let (cells, cols) = text_table_paras(paras, sep, columns)?;
     // A table has at most 63 columns; a longer row would lose its last fields.
     if cols > wordcraft_doc::table::MAX_COLS {
         return Err(CmdError::Failed("a table can have at most 63 columns".into()));
@@ -1282,10 +1400,10 @@ fn from_text(s: &mut Session, v: &Value) -> CmdResult {
         t.grid.iter_mut().for_each(|w| *w = col_width);
         t.rows.iter_mut().flat_map(|row| row.cells.iter_mut()).for_each(|c| c.props.width = Some(col_width));
     }
-    for (r, l) in cells.iter().enumerate() {
-        for (c, txt) in l.iter().enumerate() {
+    for (r, l) in cells.into_iter().enumerate() {
+        for (c, para) in l.into_iter().enumerate() {
             if let Some(cl) = t.rows.get_mut(r).and_then(|row| row.cells.get_mut(c)) {
-                cl.blocks = vec![para_block(Paragraph::with_text(txt.trim(), Default::default()))];
+                cl.blocks = vec![para_block(para)];
             }
         }
     }

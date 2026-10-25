@@ -317,14 +317,41 @@ fn sheet_rows(stream: &[u8], offset: usize, g: &Globals) -> Result<Vec<Vec<Strin
     // A FORMULA with a string result waits for the STRING record after it (only shared-formula,
     // array and table records may come between).
     let mut pending: Option<(u16, u16)> = None;
+    let mut depth = 1usize;
     while let Some((kind, d, next)) = record(stream, pos) {
         pos = next;
-        if kind == EOF || kind == BOF {
-            break;
+        if kind == BOF {
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        if kind == EOF {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                break;
+            }
+            continue;
+        }
+        if depth > 1 {
+            continue;
         }
         if kind == STRING {
-            if let (Some((r, c)), Some(s)) = (pending.take(), unicode_string(d, 0)) {
-                put(&mut cells, r, c, &s, &mut count);
+            let mut parts = vec![d];
+            let mut p = pos;
+            while let Some((CONTINUE, cd, n)) = record(stream, p) {
+                parts.push(cd);
+                p = n;
+            }
+            pos = p;
+            if let Some((r, c)) = pending.take() {
+                let cch = usize::from(u16_at(parts[0], 0).unwrap_or(0));
+                let high = parts[0].get(2).is_some_and(|f| f & 1 != 0);
+                if let Some(s) = parts[0].get(3..).and_then(|first| {
+                    let mut all_parts = vec![first];
+                    all_parts.extend_from_slice(&parts[1..]);
+                    Pieces::new(all_parts).chars(cch, high)
+                }) {
+                    put(&mut cells, r, c, &s, &mut count);
+                }
             }
             continue;
         }
@@ -595,6 +622,17 @@ mod tests {
         assert_eq!(sheet_rows(&sheet_stream(&recs), 0, &g).unwrap(), rows(&[&["late"]]));
     }
 
+    /// #2334: a formula's string result split by a CONTINUE record is read whole.
+    #[test]
+    fn formula_string_continues_in_a_continue_record() {
+        let mut formula = vec![0u8, 0, 0, 0, 0, 0, 0xFF, 0xFF];
+        formula.extend_from_slice(&[0; 6]);
+        let g = globals_with(Vec::new());
+        // cch 4, Latin-1: two characters here, the other two after the CONTINUE's flag byte.
+        let recs = vec![(FORMULA, cell(0, 0, &formula)), (STRING, vec![4u8, 0, 0, b'a', b'b']), (CONTINUE, vec![0u8, b'c', b'd'])];
+        assert_eq!(sheet_rows(&sheet_stream(&recs), 0, &g).unwrap(), rows(&[&["abcd"]]));
+    }
+
     #[test]
     fn hostile_workbooks_fail_cleanly() {
         let book = build(&[("S", rows(&[&["a", "1"]]))]).unwrap();
@@ -618,5 +656,39 @@ mod tests {
         comp.create_stream("/Book").unwrap();
         let old = comp.into_inner().into_inner();
         assert!(sheet_names(&old).unwrap_err().contains("Excel 5.0/95"));
+    }
+
+    #[test]
+    fn embedded_substream_does_not_truncate_sheet() {
+        let mut stream = Vec::new();
+        fn rec(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            out.extend_from_slice(data);
+        }
+        rec(&mut stream, BOF, &[0x00, 0x06, 0x05, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let sheet_offset = 37u32;
+        rec(&mut stream, BOUNDSHEET, &[sheet_offset as u8, 0, 0, 0, 0, 0, 1, 0, b'S']);
+        rec(&mut stream, EOF, &[]);
+        assert_eq!(stream.len(), sheet_offset as usize);
+        // Worksheet BOF
+        rec(&mut stream, BOF, &[0x00, 0x06, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // Cell row 0, col 0 = NUMBER 1.0
+        let mut c1 = vec![0, 0, 0, 0, 0, 0];
+        c1.extend_from_slice(&1.0f64.to_le_bytes());
+        rec(&mut stream, NUMBER, &c1);
+        // Embedded chart substream: BOF(0x0020) ... EOF
+        rec(&mut stream, BOF, &[0x00, 0x06, 0x20, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        rec(&mut stream, EOF, &[]);
+        // Cell row 1, col 0 = NUMBER 2.0
+        let mut c2 = vec![1, 0, 0, 0, 0, 0];
+        c2.extend_from_slice(&2.0f64.to_le_bytes());
+        rec(&mut stream, NUMBER, &c2);
+        // Worksheet EOF
+        rec(&mut stream, EOF, &[]);
+
+        let g = globals(&stream).unwrap();
+        let rows = sheet_rows(&stream, sheet_offset as usize, &g).unwrap();
+        assert_eq!(rows, vec![vec!["1".to_string()], vec!["2".to_string()]]);
     }
 }

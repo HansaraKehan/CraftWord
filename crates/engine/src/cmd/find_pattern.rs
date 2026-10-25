@@ -106,6 +106,16 @@ fn code_char(n: u32) -> Option<char> {
     })
 }
 
+/// A Windows-1252 code as its Unicode scalar: 128–159 hold typographic characters there (151 is
+/// an em dash); the five undefined slots and every other code stay as they are.
+fn ansi(n: u32) -> u32 {
+    const HIGH: [u32; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018,
+        0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    n.checked_sub(128).and_then(|k| HIGH.get(k as usize)).copied().unwrap_or(n)
+}
+
 /// Read a numeric code after `^` (`13`, `0151`, `u8212`) starting at `chars[i]`; returns the
 /// character and how many characters it took.
 fn numeric_code(chars: &[char], i: usize) -> Option<(char, usize)> {
@@ -115,6 +125,8 @@ fn numeric_code(chars: &[char], i: usize) -> Option<(char, usize)> {
         return None;
     }
     let n: u32 = digits.parse().ok()?;
+    // `^0nnn` is a Windows-1252 (ANSI) code; `^nnn` and `^unnnn` are Unicode.
+    let n = if start == i && digits.starts_with('0') { ansi(n) } else { n };
     Some((code_char(n)?, start - i + digits.chars().count()))
 }
 
@@ -414,4 +426,41 @@ pub fn expand(pieces: &[Piece], found: &str, group: &dyn Fn(usize) -> Option<Str
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finds(query: &str, hay: &str) -> bool {
+        let c = compile(query, &Opts::default()).unwrap();
+        regex::Regex::new(&c.pattern).unwrap().is_match(hay)
+    }
+
+    fn replaced(with: &str) -> String {
+        expand(&parse_replace(with, &Opts::default()), "", &|_| None, "")
+    }
+
+    #[test]
+    fn ansi_codes_128_to_159_are_windows_1252() {
+        for (code, ch) in [("^0151", '\u{2014}'), ("^0150", '\u{2013}'), ("^0128", '\u{20AC}'), ("^0145", '\u{2018}')] {
+            let hay = format!("a{ch}b");
+            assert!(finds(code, &hay), "{code} should find {ch:?}");
+            assert!(!finds(code, code), "{code} should not match its literal text");
+            let w = Opts { wildcards: true, ..Opts::default() };
+            let c = compile(code, &w).unwrap();
+            assert!(regex::Regex::new(&c.pattern).unwrap().is_match(&hay), "wildcard {code} should find {ch:?}");
+        }
+        assert_eq!(replaced("x^0151y"), "x\u{2014}y");
+        assert_eq!(replaced("^0128"), "\u{20AC}");
+        // Unchanged: other codes and the undefined Windows-1252 slots.
+        assert!(finds("^13", "a\rb"));
+        assert!(finds("^0065", "A"));
+        for undefined in ["^0129", "^0141", "^0143", "^0144", "^0157"] {
+            assert_eq!(replaced(undefined), undefined);
+        }
+        // Without the leading zero the code is not read as Windows-1252.
+        assert!(!finds("^151", "\u{2014}"));
+        assert!(!finds("^150", "\u{2013}"));
+    }
 }

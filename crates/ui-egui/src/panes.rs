@@ -1,12 +1,14 @@
 //! Side panes: Navigation (headings, pages, search results), Clipboard, Styles, Style Inspector,
-//! Accessibility and Alt Text (see `a11y_pane`), Restrict Editing ([`crate::dialogs_review`]), Comments,
+//! Accessibility and Alt Text (see `a11y_pane`), Format Shape (see `format_shape`), Restrict Editing ([`crate::dialogs_review`]), Comments,
 //! and the SmartArt Text Pane.
 
 use std::collections::BTreeMap;
 
 use egui::{Stroke, Ui, vec2};
 use serde_json::{Value, json};
-use wordcraft_doc::{Pos, StoryRef};
+use wordcraft_doc::numbering::{Counters, LevelSuffix};
+use wordcraft_doc::section::NumFormat;
+use wordcraft_doc::{Document, Path, Pos, StoryRef};
 
 use crate::WordApp;
 use crate::theme::{Tokens, regular, semibold};
@@ -68,6 +70,15 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             .resizable(true)
             .frame(egui::Frame::NONE.fill(t.panel).inner_margin(10).stroke(Stroke::new(1.0, t.border)))
             .show(ui, |ui| crate::a11y_pane::alt_text(app, ui));
+    }
+    if !app.session.view.format_shape_pane {
+        crate::format_shape::forget_drag(ui.ctx());
+    } else {
+        egui::Panel::right("format_shape_pane")
+            .default_size(280.0)
+            .resizable(true)
+            .frame(egui::Frame::NONE.fill(t.panel).inner_margin(10).stroke(Stroke::new(1.0, t.border)))
+            .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| crate::format_shape::pane(app, ui)));
     }
     if app.restrict.open {
         egui::Panel::right("restrict_pane")
@@ -182,27 +193,27 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
         }
         _ => {
             let caret = app.session.sel.focus.clone();
-            let mut current: Option<usize> = None;
-            let mut items = Vec::new();
-            for path in app.session.doc.para_paths(StoryRef::Body) {
-                let Some(p) = app.session.doc.para(StoryRef::Body, &path) else { continue };
-                let rp = app.session.doc.styles.resolve_para(&p.props);
-                if let Some(lv) = rp.outline_level {
-                    let txt = p.plain_text().trim().to_string();
-                    if txt.is_empty() || rp.style.starts_with("TOC") {
-                        continue;
-                    }
-                    if path <= caret.path {
-                        current = Some(items.len());
-                    }
-                    items.push((path, lv, txt));
-                }
-            }
+            let items = nav_headings(&app.session.doc);
+            let current = items.iter().rposition(|(path, ..)| *path <= caret.path);
             if items.is_empty() {
                 ui.label(egui::RichText::new(tl!("Create an interactive outline of your document.\n\nIt's a great way to keep track of where you are or quickly move your content around.\n\nTo get started, go to the Home tab and apply Heading styles to the headings in your document.")).weak());
             }
+            // A heading has children when the next heading is a deeper level (#1997).
+            let has_children: Vec<bool> = items.iter().enumerate().map(|(i, (_, lv, _))| items.get(i + 1).is_some_and(|n| n.1 > *lv)).collect();
+            let collapsed_flags: Vec<bool> = items.iter().enumerate().map(|(i, (p, _, _))| has_children[i] && app.ui.nav_collapsed.contains(p)).collect();
+            let levels: Vec<u8> = items.iter().map(|(_, lv, _)| *lv).collect();
+            let visible = visible_headings(&levels, &collapsed_flags);
             for (i, (path, lv, txt)) in items.into_iter().enumerate() {
-                if nav_heading(ui, lv, &txt, current == Some(i)).clicked() {
+                if !visible[i] {
+                    continue;
+                }
+                let collapsed = collapsed_flags[i];
+                let (toggle, r) = nav_heading(ui, lv, &txt, current == Some(i), has_children[i].then_some(collapsed));
+                if toggle {
+                    if !app.ui.nav_collapsed.remove(&path) {
+                        app.ui.nav_collapsed.insert(path);
+                    }
+                } else if r.clicked() {
                     let _ = app.run("caret.set", json!({"pos": Pos { story: StoryRef::Body, path, off: 0 }}));
                     // Align the chosen heading's page immediately against this pane, rather
                     // than the indeterminate minimum movement from scroll_to_rect.
@@ -215,21 +226,85 @@ fn nav(app: &mut WordApp, ui: &mut Ui) {
     });
 }
 
+/// Which headings the pane shows: those under a collapsed heading (every following heading
+/// of a deeper level) are hidden (#1997).
+fn visible_headings(levels: &[u8], collapsed: &[bool]) -> Vec<bool> {
+    let mut hide_below: Option<u8> = None;
+    levels
+        .iter()
+        .zip(collapsed)
+        .map(|(&lv, &c)| {
+            if hide_below.is_some_and(|h| lv > h) {
+                return false;
+            }
+            hide_below = c.then_some(lv);
+            true
+        })
+        .collect()
+}
+
+/// The body's headings (paragraphs with an outline level) in document order, as (path, level,
+/// text). A numbered heading starts with the number it shows (`2.1 Method`), as in Word.
+fn nav_headings(doc: &Document) -> Vec<(Path, u8, String)> {
+    // Every numbered paragraph advances the list counters, headings or not.
+    let mut counters = Counters::default();
+    let mut items = Vec::new();
+    for path in doc.para_paths(StoryRef::Body) {
+        let Some(p) = doc.para(StoryRef::Body, &path) else { continue };
+        let rp = doc.styles.resolve_para(&p.props);
+        let number = p
+            .props
+            .numbering
+            .or(rp.numbering)
+            .filter(|n| n.num != 0)
+            .and_then(|n| counters.next_label(&doc.numbering, n.num, n.level))
+            .filter(|(label, def)| !label.is_empty() && !matches!(def.format, NumFormat::Bullet | NumFormat::None));
+        if let Some(lv) = rp.outline_level {
+            let txt = p.plain_text().trim().to_string();
+            if txt.is_empty() || rp.style.starts_with("TOC") {
+                continue;
+            }
+            let txt = match number {
+                Some((label, def)) if def.suffix == LevelSuffix::Nothing => format!("{label}{txt}"),
+                Some((label, _)) => format!("{label} {txt}"),
+                None => txt,
+            };
+            items.push((path, lv, txt));
+        }
+    }
+    items
+}
+
 /// Constrain each heading to the available pane width so long document text cannot
 /// enlarge the panel. A heading too long for the width wraps onto further lines — a word
 /// wider than the pane is broken too — and the row grows with it, so the label reads whole
 /// instead of ending in an ellipsis (#3015).
-fn nav_heading(ui: &mut Ui, level: u8, text: &str, selected: bool) -> egui::Response {
+fn nav_heading(ui: &mut Ui, level: u8, text: &str, selected: bool, collapsed: Option<bool>) -> (bool, egui::Response) {
     ui.horizontal(|ui| {
         ui.add_space(level as f32 * 14.0);
+        // The triangle is drawn in code; headings without children keep an empty slot so text aligns.
+        let mut toggled = false;
+        let (rect, tri) = ui.allocate_exact_size(vec2(14.0, ui.spacing().interact_size.y), egui::Sense::click());
+        if let Some(c) = collapsed {
+            let ctr = rect.center();
+            let col = ui.visuals().text_color();
+            let pts = if c {
+                vec![ctr + vec2(-2.5, -4.0), ctr + vec2(-2.5, 4.0), ctr + vec2(3.0, 0.0)]
+            } else {
+                vec![ctr + vec2(-4.0, -2.5), ctr + vec2(4.0, -2.5), ctr + vec2(0.0, 3.0)]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+            toggled = tri.clicked();
+        }
         let label = egui::RichText::new(text).font(if level == 0 { semibold(12.5) } else { regular(12.5) });
         let width = ui.available_width();
-        ui.add(
+        let r = ui.add(
             // The trailing grow atom takes the spare width, so the text starts flush left
             // under its parent instead of centred, as in Word (#1199). A minimum height
             // keeps short headings on one row; a wrapped one becomes as tall as it needs.
             egui::Button::selectable(selected, (label, egui::Atom::grow())).wrap().min_size(vec2(width, ui.spacing().interact_size.y)),
-        )
+        );
+        (toggled, r)
     })
     .inner
 }
@@ -371,6 +446,7 @@ fn comments(app: &mut WordApp, ui: &mut Ui) {
         for c in list.as_array().cloned().unwrap_or_default() {
             let id = c.get("id").and_then(Value::as_u64).unwrap_or(0);
             let reply = c.get("parent").is_some_and(|p| !p.is_null());
+            let when = u32::try_from(id).ok().and_then(|i| app.session.doc.comments.get(&i)).map(crate::local_time::comment_time).unwrap_or_default();
             egui::Frame::NONE.fill(t.input).stroke(Stroke::new(1.0, t.border)).corner_radius(6).inner_margin(8).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if reply {
@@ -378,7 +454,7 @@ fn comments(app: &mut WordApp, ui: &mut Ui) {
                 }
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(c.get("author").and_then(Value::as_str).unwrap_or("")).font(semibold(12.0)));
-                    ui.label(egui::RichText::new(comment_stamp(c.get("date").and_then(Value::as_str).unwrap_or(""))).small().weak());
+                    ui.label(egui::RichText::new(when).small().weak());
                     if c.get("resolved").and_then(Value::as_bool).unwrap_or(false) {
                         ui.label(egui::RichText::new(tl!("Resolved")).small().color(t.green));
                     }
@@ -811,11 +887,6 @@ fn trim_num(x: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// `2026-10-12T04:44:00Z` → `2026-10-12 04:44` (date and time, no seconds) for comment cards.
-fn comment_stamp(iso: &str) -> String {
-    iso.chars().take(16).map(|c| if c == 'T' { ' ' } else { c }).collect()
-}
-
 /// `dotDash` → `Dot dash` (enum values from the document model).
 fn camel_words(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
@@ -834,15 +905,6 @@ fn camel_words(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::comment_stamp;
-
-    #[test]
-    fn comment_stamp_keeps_date_and_time() {
-        assert_eq!(comment_stamp("2026-10-12T04:44:31Z"), "2026-10-12 04:44");
-        assert_eq!(comment_stamp("2026-10-12"), "2026-10-12");
-        assert_eq!(comment_stamp(""), "");
-    }
-
     /// #1902: Clipboard Delete returns focus to the document like paste does.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
@@ -917,6 +979,31 @@ mod tests {
 mod navigation_tests {
     use super::*;
 
+    /// Numbered headings are listed with the number they show, and numbered body paragraphs in
+    /// the same list still count (#3418).
+    #[test]
+    fn headings_show_their_list_numbers() {
+        use wordcraft_doc::props::NumRef;
+        use wordcraft_doc::{CharProps, ListKind, Paragraph, para_block};
+        let mut doc = Document::new();
+        let num = doc.numbering.add_list(ListKind::Legal);
+        let para = |text: &str, style: &str, level: Option<u8>| {
+            let mut p = Paragraph::with_text(text, CharProps::default()).styled(style);
+            p.props.numbering = level.map(|level| NumRef { num, level });
+            para_block(p)
+        };
+        doc.body = vec![
+            para("Intro", "Heading1", Some(0)),
+            para("Scope", "Heading2", Some(1)),
+            para("A numbered body paragraph", "Normal", Some(1)),
+            para("Terms", "Heading2", Some(1)),
+            para("Method", "Heading1", Some(0)),
+            para("Appendix", "Heading1", None),
+        ];
+        let texts: Vec<String> = nav_headings(&doc).into_iter().map(|(_, _, t)| t).collect();
+        assert_eq!(texts, ["1. Intro", "1.1. Scope", "1.3. Terms", "2. Method", "Appendix"]);
+    }
+
     #[test]
     fn long_headings_wrap_without_stretching_navigation() {
         // A heading that runs well past the width, and a single word wider than the pane.
@@ -933,7 +1020,7 @@ mod navigation_tests {
                 let result = egui::Panel::left("navigation_test")
                     .default_size(width)
                     .resizable(true)
-                    .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| nav_heading(ui, level, text, true)).inner);
+                    .show(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| nav_heading(ui, level, text, true, None).1).inner);
                 panel_rect = result.response.rect;
                 heading_rect = result.inner.rect;
             });
@@ -972,7 +1059,7 @@ mod navigation_tests {
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 600.0));
             let mut panel_left = 0.0;
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
-                let result = egui::Panel::left("navigation_test").default_size(260.0).show(ui, |ui| nav_heading(ui, level, "Kilns", false));
+                let result = egui::Panel::left("navigation_test").default_size(260.0).show(ui, |ui| nav_heading(ui, level, "Kilns", false, None));
                 panel_left = result.response.rect.min.x;
             });
             let x = output
@@ -987,7 +1074,25 @@ mod navigation_tests {
             x - panel_left
         };
         let (top, second) = (text_left(0), text_left(1));
-        assert!(top < 30.0, "a top-level heading starts at the pane's left edge, not centred: {top}px in");
+        assert!(top < 40.0, "a top-level heading starts at the pane's left edge, not centred: {top}px in");
         assert!((second - top - 14.0).abs() < 0.5, "a level-2 heading is indented 14px under its parent: {top} / {second}");
+    }
+
+    /// Collapsing a heading hides everything nested under it, and only that (#1997).
+    #[test]
+    fn collapsed_heading_hides_its_descendants_only() {
+        // 1 / 1.1 / 1.1.1 / 1.2 / 1.2.1 / 2 / 2.1
+        let levels = [0, 1, 2, 1, 2, 0, 1];
+        let none = [false; 7];
+        assert_eq!(visible_headings(&levels, &none), vec![true; 7]);
+        let mut c = none;
+        c[3] = true; // collapse 1.2
+        assert_eq!(visible_headings(&levels, &c), vec![true, true, true, true, false, true, true]);
+        c[3] = false;
+        c[0] = true; // collapse 1
+        assert_eq!(visible_headings(&levels, &c), vec![true, false, false, false, false, true, true]);
+        // A collapsed child inside a collapsed parent stays hidden and does not reopen siblings.
+        c[1] = true;
+        assert_eq!(visible_headings(&levels, &c), vec![true, false, false, false, false, true, true]);
     }
 }

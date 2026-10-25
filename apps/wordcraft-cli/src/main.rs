@@ -180,6 +180,8 @@ fn listed_text(doc: &wordcraft_doc::Document) -> Result<String, String> {
 }
 
 /// `--author NAME`: the author recorded on tracked changes and comments (`file.setAuthor`).
+/// The command also checks whether the open document is protected: this name determines which
+/// named editing exceptions the session can use, so the flag must not bypass that check.
 fn set_author(s: &mut Session, name: &str) -> Result<(), String> {
     s.run("file.setAuthor", &json!({"name": name})).map(|_| ()).map_err(|e| format!("--author: {e}"))
 }
@@ -377,6 +379,14 @@ fn script_operand<S: AsRef<OsStr>>(raw: &[S]) -> Option<PathBuf> {
     raw.get(at + 1).map(|a| PathBuf::from(a.as_ref()))
 }
 
+/// Whether `addr` (`HOST:PORT`, as `--connect` gives it) is at least shaped like an address: a
+/// host of some kind and a numeric port. Malformed addresses fail at startup — a lazy remote
+/// would otherwise retry one on every call and never say why nothing connects.
+fn valid_connect_addr(addr: &str) -> bool {
+    let Some((host, port)) = addr.rsplit_once(':') else { return false };
+    !host.is_empty() && port.parse::<u16>().is_ok()
+}
+
 fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
     let script_path = script_operand(args);
     let (args, file) = text_args(args)?;
@@ -471,12 +481,13 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             }
             let mut s = match (from_file, from_template) {
                 (Some(f), _) => open(&f, password.as_deref())?,
-                (None, Some(t)) => {
+                // Both go through `file.new`, which puts a blank document on the region's paper (#3152).
+                (None, t) => {
                     let mut s = session(wordcraft_doc::Document::new());
-                    s.run("file.new", &json!({"template": t})).map_err(|e| e.to_string())?;
+                    let params = t.map_or_else(|| json!({}), |t| json!({"template": t}));
+                    s.run("file.new", &params).map_err(|e| e.to_string())?;
                     s
                 }
-                _ => session(wordcraft_doc::Document::new()),
             };
             if let Some(name) = arg_value(&rest, "--author") {
                 set_author(&mut s, &name)?;
@@ -579,11 +590,27 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
                     return Err("mcp: --author applies to the headless server; with --connect, run file.setAuthor".into());
                 }
                 Some(addr) => {
-                    let remote = wordcraft_mcp::Remote::connect(&addr).map_err(|e| format!("can't reach the WordCraft app at {addr}: {e}"))?;
-                    if let Some(w) = remote.key_warning() {
-                        eprintln!("wordcraft-cli: {w}");
+                    // A malformed address must fail at startup, not on every tool call the lazy
+                    // remote would retry it with.
+                    if !valid_connect_addr(&addr) {
+                        return Err(format!("mcp: --connect needs HOST:PORT with a numeric port, got `{addr}`").into());
                     }
-                    Box::new(remote)
+                    match wordcraft_mcp::Remote::connect(&addr) {
+                        Ok(remote) => {
+                            eprintln!("wordcraft-cli mcp: connected to WordCraft at {addr}");
+                            if let Some(w) = remote.key_warning() {
+                                eprintln!("wordcraft-cli: {w}");
+                            }
+                            Box::new(remote)
+                        }
+                        // The app may start after the client does: serve anyway and connect on the
+                        // first call, or the client marks the server failed for its whole session
+                        // (#4078).
+                        Err(e) => {
+                            eprintln!("wordcraft-cli mcp: WordCraft is not reachable at {addr} yet ({e}); will retry on each call");
+                            Box::new(wordcraft_mcp::Remote::lazy(&addr))
+                        }
+                    }
                 }
                 None => {
                     let mut headless = wordcraft_mcp::Headless::default();
@@ -804,6 +831,34 @@ mod tests {
         assert!(run(&args(&["run", "--author", "Claude", "--cmd", "review.trackChanges={\"value\":true}"])).is_ok());
         // The app's user name is the person's own; a bridge flag must not rewrite it.
         assert!(run(&args(&["mcp", "--connect", "127.0.0.1:9", "--author", "Claude"])).is_err_and(|e| e.to_string().contains("--author")));
+        // A malformed address fails at startup, not on every retried call.
+        assert!(run(&args(&["mcp", "--connect", "127.0.0.1:notaport"])).is_err_and(|e| e.to_string().contains("numeric port")));
+        assert!(run(&args(&["mcp", "--connect", "notaport"])).is_err_and(|e| e.to_string().contains("numeric port")));
+        // The flag goes through the same protection check as the command.
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        let before = s.author.clone();
+        assert!(set_author(&mut s, "Claude").is_err());
+        assert_eq!(s.author, before);
+        assert!(s.run("file.setAuthor", &json!({"name": "Claude"})).is_err());
+    }
+
+    #[test]
+    fn author_flag_cannot_claim_a_named_exception_after_protection() {
+        use wordcraft_doc::{CharProps, InlineObject, StoryRef};
+
+        let mut s = Session::new(wordcraft_doc::Document::from_text("Named exception."));
+        let end = s.doc.end_of(StoryRef::Body);
+        s.doc.insert_object(&end, InlineObject::PermEnd { id: 1 }, &CharProps::default()).unwrap();
+        let start = s.doc.start_of(StoryRef::Body);
+        s.doc.insert_object(&start, InlineObject::PermStart { id: 1, group: String::new(), editor: "Alice".into() }, &CharProps::default()).unwrap();
+        assert_eq!(s.doc.perm_ranges().len(), 1);
+        s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
+        s.run("select.text", &json!({"text": "Named"})).unwrap();
+        assert!(s.run("text.insert", &json!({"text": "Changed"})).is_err());
+
+        assert!(set_author(&mut s, "Alice").is_err(), "--author changed the identity used for a protected exception");
+        assert!(s.run("text.insert", &json!({"text": "Changed"})).is_err());
     }
 
     #[test]
@@ -1126,7 +1181,7 @@ mod tests {
     }
 
     /// APFS refuses file names that aren't valid UTF-8, so the fixture can't be made on macOS
-    /// (as in `tests/non_utf8_args.rs`).
+    /// (as in `tests/it/non_utf8_args.rs`).
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn script_file_name_need_not_be_unicode() {

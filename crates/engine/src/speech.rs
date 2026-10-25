@@ -249,6 +249,7 @@ pub fn speech_language(text: &str, explicit: Option<&str>, bidi: Option<&str>) -
 
 /// The primary language subtag of a plain tag, lowercased (`ru-RU` gives `ru`). `None` for tags
 /// without a two- or three-letter language, such as Word's `x-none`.
+#[cfg(any(unix, windows, test))]
 fn primary_tag(tag: &str) -> Option<String> {
     let t = plain_tag(tag)?;
     t.split('-').next().filter(|p| (2..=3).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic())).map(str::to_ascii_lowercase)
@@ -256,7 +257,7 @@ fn primary_tag(tag: &str) -> Option<String> {
 
 /// The language to ask the speech program for, or `None` to keep its default voice: only when
 /// `lang` isn't the language the default voice speaks (`default`, a primary subtag) already.
-#[cfg(any(not(target_os = "windows"), test))]
+#[cfg(any(unix, test))]
 fn voice_language(lang: Option<&str>, default: &str) -> Option<String> {
     lang.and_then(primary_tag).filter(|p| !p.eq_ignore_ascii_case(default))
 }

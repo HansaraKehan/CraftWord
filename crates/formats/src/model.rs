@@ -5,9 +5,9 @@
 use std::sync::Arc;
 
 use wordcraft_doc::numbering::{AbstractNum, Level, ListKind, Num, levels_for};
-use wordcraft_doc::para::{InlineObject, OBJ, PAGE_BREAK, Run};
+use wordcraft_doc::para::{InlineObject, OBJ, PAGE_BREAK, RubyAlign, Run, ruby_raise};
 use wordcraft_doc::props::{
-    Border, BorderStyle, Borders, CellProps, CharProps, NumRef, ParaProps, PropChange, RowProps, TextColor, Underline, VMerge, VertAlign,
+    Border, BorderStyle, Borders, CellProps, CharProps, NumRef, ParaProps, PropChange, RowProps, TextColor, Underline, VAlign, VMerge, VertAlign,
 };
 use wordcraft_doc::section::NumFormat;
 use wordcraft_doc::styles::{Style, StyleKind};
@@ -91,6 +91,34 @@ pub enum Inline {
         linear: String,
         display: bool,
     },
+    /// Ruby (phonetic guide): `ruby` text (furigana, pinyin…) over `base` text, in the formatting
+    /// of the run it sits in (#1681). Formats without ruby write the base text
+    /// ([`ruby_as_text`]).
+    Ruby {
+        base: String,
+        ruby: String,
+        fmt: Fmt,
+    },
+}
+
+/// Base text size (points) a phonetic guide falls back to when the source states none: the
+/// Phonetic Guide command's own fallback for an unresolved size
+/// (`crates/engine/src/cmd/phonetic.rs`).
+pub const RUBY_BASE_SIZE: f32 = 10.5;
+
+/// Ruby text size for a base of `base_size` points: half the base size, rounded down to a half
+/// point, as the Phonetic Guide command sets it.
+fn ruby_default_size(base_size: f32) -> f32 {
+    (base_size.floor() / 2.0).max(1.0)
+}
+
+/// The ruby a format without its own ruby markup gets: a [`InlineObject::Ruby`] over `base` with
+/// the Phonetic Guide's defaults (centred, half the base size, raised clear of the base text).
+pub fn ruby_object(base: String, ruby: String, base_size: f32) -> InlineObject {
+    let base_size = if base_size.is_finite() { base_size.clamp(1.0, 1584.0) } else { RUBY_BASE_SIZE };
+    let size = ruby_default_size(base_size);
+    let raise = ruby_raise(0.0, base_size, size).clamp(0.0, 1584.0);
+    InlineObject::Ruby { base, ruby, align: RubyAlign::default(), size, raise, base_size, lang: String::new(), props: Default::default() }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -170,12 +198,13 @@ impl Para {
         }
         self.inlines.push(Inline::Text(s.to_string(), f.clone()));
     }
-    /// The plain text (images and anchors left out; equations as their linear text).
+    /// The plain text (images and anchors left out; equations as their linear text, ruby as its
+    /// base text).
     pub fn text(&self) -> String {
         let mut s = String::new();
         for i in &self.inlines {
             match i {
-                Inline::Text(t, _) | Inline::Equation { linear: t, .. } => s.push_str(t),
+                Inline::Text(t, _) | Inline::Equation { linear: t, .. } | Inline::Ruby { base: t, .. } => s.push_str(t),
                 Inline::Image(_) | Inline::Anchor(_) | Inline::Figure(_) => {}
             }
         }
@@ -191,7 +220,7 @@ impl Para {
                     Some(font) if wordcraft_doc::symbol_fonts::is_symbol_font(font) => s.push_str(&wordcraft_doc::symbol_fonts::map_text(font, t)),
                     _ => s.push_str(t),
                 },
-                Inline::Equation { linear: t, .. } => s.push_str(t),
+                Inline::Equation { linear: t, .. } | Inline::Ruby { base: t, .. } => s.push_str(t),
                 Inline::Image(_) | Inline::Anchor(_) | Inline::Figure(_) => {}
             }
         }
@@ -244,11 +273,12 @@ pub struct Cell {
     pub shading: Option<Rgb>,
     /// The cell's own borders (RTF `\clbrdr…`), drawn whatever the table's style.
     pub borders: Option<wordcraft_doc::props::Borders>,
+    pub valign: Option<VAlign>,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { blocks: Vec::new(), colspan: 1, rowspan: 1, covered: false, header: false, shading: None, borders: None }
+        Cell { blocks: Vec::new(), colspan: 1, rowspan: 1, covered: false, header: false, shading: None, borders: None, valign: None }
     }
 }
 
@@ -357,6 +387,22 @@ pub fn equations_as_text(inlines: &[Inline]) -> std::borrow::Cow<'_, [Inline]> {
         match i {
             Inline::Equation { linear, .. } => p.push_text(linear, &Fmt::default()),
             Inline::Text(t, f) => p.push_text(t, f),
+            other => p.inlines.push(other.clone()),
+        }
+    }
+    std::borrow::Cow::Owned(p.inlines)
+}
+
+/// `inlines` with ruby as its base text, for formats that have no ruby markup: the base text (and
+/// everything around it) keeps its formatting, and the reading is left out.
+pub fn ruby_as_text(inlines: &[Inline]) -> std::borrow::Cow<'_, [Inline]> {
+    if !inlines.iter().any(|i| matches!(i, Inline::Ruby { .. })) {
+        return std::borrow::Cow::Borrowed(inlines);
+    }
+    let mut p = Para::default();
+    for i in inlines {
+        match i {
+            Inline::Ruby { base, fmt, .. } => p.push_text(base, fmt),
             other => p.inlines.push(other.clone()),
         }
     }
@@ -568,6 +614,20 @@ impl<'a> Builder<'a> {
                         append(&mut out, "", &CharProps::default(), Some(obj));
                     }
                 }
+                Inline::Ruby { base, ruby, fmt } => {
+                    let (base, ruby) = (clean_text(base), clean_text(ruby));
+                    let cp = char_props(fmt);
+                    // A source without a base or without a reading (malformed markup) is just its
+                    // text: a guide that annotates nothing is no guide.
+                    if base.is_empty() || ruby.is_empty() {
+                        append(&mut out, if base.is_empty() { &ruby } else { &base }, &cp, None);
+                    } else {
+                        // Ruby attributes a format without them doesn't state (HTML): the
+                        // Phonetic Guide's defaults for a new guide over this run's text.
+                        let obj = ruby_object(base, ruby, cp.size.unwrap_or(RUBY_BASE_SIZE));
+                        append(&mut out, "", &cp, Some(obj));
+                    }
+                }
             }
         }
         out.mark.ins = p.mark_ins.as_deref().map(|m| self.revision(RevisionKind::Insert, m));
@@ -707,7 +767,15 @@ impl<'a> Builder<'a> {
                     VMerge::None
                 };
                 row.cells.push(wordcraft_doc::Cell {
-                    props: CellProps { width: Some(w), span: span as u32, vmerge, shading: c.shading, borders: c.borders, ..Default::default() },
+                    props: CellProps {
+                        width: Some(w),
+                        span: span as u32,
+                        vmerge,
+                        shading: c.shading,
+                        borders: c.borders,
+                        valign: c.valign,
+                        ..Default::default()
+                    },
                     blocks,
                     controls: Default::default(),
                 });
@@ -959,14 +1027,21 @@ fn flow_paras_in(doc: &Document, p: &Paragraph, tracked: bool) -> Vec<Para> {
                 continue;
             }
             match obj {
-                Some(InlineObject::Image { media, w, h, alt, .. }) => {
+                Some(o @ InlineObject::Image { media, w, h, alt, .. }) => {
                     if !buf.is_empty() {
                         out.push_text(&std::mem::take(&mut buf), &f);
                     }
+                    // A picture marked decorative keeps its description in the document, but
+                    // exports with none (`alt=""`), so screen readers skip it.
+                    let alt = if o.is_decorative() { "" } else { alt.as_str() };
                     match doc.media.get(media) {
-                        Some(data) => {
-                            out.inlines.push(Inline::Image(Img { data: data.clone(), ext: media_ext(media, data), w: *w, h: *h, alt: alt.clone() }))
-                        }
+                        Some(data) => out.inlines.push(Inline::Image(Img {
+                            data: data.clone(),
+                            ext: media_ext(media, data),
+                            w: *w,
+                            h: *h,
+                            alt: alt.to_string(),
+                        })),
                         None if !alt.is_empty() => buf.push_str(alt),
                         None => {}
                     }
@@ -987,6 +1062,14 @@ fn flow_paras_in(doc: &Document, p: &Paragraph, tracked: bool) -> Vec<Para> {
                     // structure gets it from there.
                     let linear = if linear.is_empty() { wordcraft_doc::math::to_linear(&math.nodes) } else { linear.clone() };
                     out.inlines.push(Inline::Equation { linear, display: *display });
+                }
+                Some(InlineObject::Ruby { base, ruby, .. }) => {
+                    if !buf.is_empty() {
+                        out.push_text(&std::mem::take(&mut buf), &f);
+                    }
+                    // The base text and reading, in the run's formatting; the guide's own
+                    // attributes (alignment, size, raise) stay in the document model.
+                    out.inlines.push(Inline::Ruby { base: base.clone(), ruby: ruby.clone(), fmt: f.clone() });
                 }
                 Some(InlineObject::BookmarkStart { name }) if name != "_GoBack" => {
                     if !buf.is_empty() {
@@ -1062,6 +1145,7 @@ fn flow_table(doc: &Document, t: &Table, depth: usize, tracked: bool) -> FTable 
                 header,
                 shading: c.props.shading,
                 borders: c.props.borders,
+                valign: c.props.valign,
             });
         }
         rows.push(cells);
@@ -1119,19 +1203,11 @@ pub fn image_px(data: &[u8]) -> Option<(u32, u32)> {
     image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_dimensions().ok()
 }
 
-/// Largest allocation one decoded picture may make when it is re-encoded on export: the `image`
-/// crate's default, stated here so the bound doesn't depend on a library default that may change.
-const MAX_DECODE_ALLOC: u64 = 512 << 20;
-
-/// Decode an encoded image with a bounded allocation, so a small file that declares huge
-/// dimensions can't exhaust memory when a picture is re-encoded on export. `None` when it would
-/// be too large or doesn't decode.
+/// Decode an encoded image within the budget pictures are drawn within, so a small file that
+/// declares huge dimensions can't exhaust memory when a picture is re-encoded on export. `None`
+/// when it would be too large or doesn't decode.
 pub fn decode_bounded(data: &[u8]) -> Option<image::DynamicImage> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    reader.limits(limits);
-    reader.decode().ok()
+    wordcraft_geom::picture::decode(data, wordcraft_geom::MAX_DECODED_BYTES).ok()
 }
 
 /// A picture from bytes with an optional display size (points); the natural size (96 dpi) is
@@ -1214,6 +1290,7 @@ pub fn percent_decode(s: &str) -> Vec<u8> {
     while let Some(&c) = b.get(i) {
         if c == b'%'
             && let Some(h) = b.get(i + 1..i + 3)
+            && h.iter().all(u8::is_ascii_hexdigit)
             && let Some(hex) = std::str::from_utf8(h).ok()
             && let Ok(v) = u8::from_str_radix(hex, 16)
         {
@@ -1289,20 +1366,60 @@ impl ListCounter {
     }
 }
 
-/// Parse a CSS / HTML colour: `#rgb`, `#rrggbb`, `rgb(r,g,b)` or a basic name.
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> Rgb {
+    let h = (h / 360.0).rem_euclid(1.0);
+    let s = s.clamp(0.0, 1.0);
+    let l = l.clamp(0.0, 1.0);
+    if s == 0.0 {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return Rgb(v, v, v);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hue_to_rgb = |mut t: f64| -> f64 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    };
+    let r = (hue_to_rgb(h + 1.0 / 3.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g = (hue_to_rgb(h) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = (hue_to_rgb(h - 1.0 / 3.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Rgb(r, g, b)
+}
+
+/// Parse a CSS / HTML colour: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(...)`, `hsl(...)` or a basic name.
 pub fn parse_color(s: &str) -> Option<Rgb> {
     let s = s.trim().to_ascii_lowercase();
     if let Some(h) = s.strip_prefix('#') {
-        if h.len() == 3 && h.is_ascii() {
+        if (h.len() == 3 || h.len() == 4) && h.is_ascii() {
             let d = |i: usize| h.get(i..i + 1).and_then(|x| u8::from_str_radix(x, 16).ok()).map(|v| v * 17);
             return Some(Rgb(d(0)?, d(1)?, d(2)?));
+        }
+        if h.len() == 8 && h.is_ascii() {
+            let p = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
+            return Some(Rgb(p(0)?, p(2)?, p(4)?));
         }
         return Rgb::parse(h);
     }
     if let Some(inner) = s.strip_prefix("rgb(").or_else(|| s.strip_prefix("rgba(")) {
-        let v: Vec<u8> = inner
-            .trim_end_matches(')')
-            .split(',')
+        let inner = inner.trim_end_matches(')').trim();
+        let before_slash = inner.split('/').next().unwrap_or(inner);
+        let parts: Vec<&str> = if before_slash.contains(',') { before_slash.split(',').collect() } else { before_slash.split_whitespace().collect() };
+        let v: Vec<u8> = parts
+            .iter()
             .take(3)
             .filter_map(|x| {
                 let x = x.trim();
@@ -1317,6 +1434,35 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
             return Some(Rgb(r, g, b));
         }
         return None;
+    }
+    if let Some(inner) = s.strip_prefix("hsl(").or_else(|| s.strip_prefix("hsla(")) {
+        let inner = inner.trim_end_matches(')').trim();
+        let before_slash = inner.split('/').next().unwrap_or(inner);
+        let parts: Vec<&str> = if before_slash.contains(',') { before_slash.split(',').collect() } else { before_slash.split_whitespace().collect() };
+        if parts.len() < 3 {
+            return None;
+        }
+        let h_str = parts[0].trim();
+        let h: f64 = if let Some(deg) = h_str.strip_suffix("deg") {
+            deg.trim().parse().ok()?
+        } else if let Some(rad) = h_str.strip_suffix("rad") {
+            rad.trim().parse::<f64>().ok()? * 180.0 / std::f64::consts::PI
+        } else if let Some(turn) = h_str.strip_suffix("turn") {
+            turn.trim().parse::<f64>().ok()? * 360.0
+        } else {
+            h_str.parse().ok()?
+        };
+        let parse_pct = |x: &str| -> Option<f64> {
+            let x = x.trim();
+            if let Some(p) = x.strip_suffix('%') {
+                Some((p.trim().parse::<f64>().ok()? / 100.0).clamp(0.0, 1.0))
+            } else {
+                Some(x.parse::<f64>().ok()?.clamp(0.0, 1.0))
+            }
+        };
+        let s = parse_pct(parts[1])?;
+        let l = parse_pct(parts[2])?;
+        return Some(hsl_to_rgb(h, s, l));
     }
     Some(match s.as_str() {
         "black" => Rgb(0, 0, 0),
@@ -1345,6 +1491,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn percent_decode_requires_hex_digits() {
+        assert_eq!(percent_decode("%+A"), b"%+A".to_vec());
+        assert_eq!(percent_decode("%-A"), b"%-A".to_vec());
+        assert_eq!(percent_decode("%G1"), b"%G1".to_vec());
+        assert_eq!(percent_decode("%41"), b"A".to_vec());
+    }
+
+    #[test]
     fn insert_covered_is_bounded_on_hostile_rowspan() {
         // Many rows each carrying the maximum rowspan would be O(rows × rowspan) covered cells;
         // the work cap must keep insertion bounded (and quick) instead of exhausting memory.
@@ -1368,8 +1522,15 @@ mod tests {
     #[test]
     fn colors() {
         assert_eq!(parse_color("#f00"), Some(Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#f00f"), Some(Rgb(255, 0, 0)));
         assert_eq!(parse_color("#0080FF"), Some(Rgb(0, 128, 255)));
+        assert_eq!(parse_color("#0080ff80"), Some(Rgb(0, 128, 255)));
         assert_eq!(parse_color("rgb(1, 2, 3)"), Some(Rgb(1, 2, 3)));
+        assert_eq!(parse_color("rgb(1 2 3)"), Some(Rgb(1, 2, 3)));
+        assert_eq!(parse_color("rgb(1 2 3 / 50%)"), Some(Rgb(1, 2, 3)));
+        assert_eq!(parse_color("hsl(0, 100%, 50%)"), Some(Rgb(255, 0, 0)));
+        assert_eq!(parse_color("hsl(120deg 100% 50%)"), Some(Rgb(0, 255, 0)));
+        assert_eq!(parse_color("hsla(240, 100%, 50%, 0.8)"), Some(Rgb(0, 0, 255)));
         assert_eq!(parse_color("navy"), Some(Rgb(0, 0, 128)));
         assert_eq!(parse_color("#zz"), None);
         assert_eq!(parse_color("rgb(1)"), None);

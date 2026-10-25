@@ -856,7 +856,7 @@ fn struct_doc(spec: &StructSpec) -> Vec<u8> {
     let stsh = stsh_bytes(&[std_bytes(1, 0x0FFF, "Normal", &Vec::new(), &Vec::new())]);
     let stsh_at = table.len();
     table.extend_from_slice(&stsh);
-    let ffn = ffn_bytes(&["Times New Roman"]);
+    let ffn = ffn_bytes(&["Times New Roman", "Wingdings"]);
     let ffn_at = table.len();
     table.extend_from_slice(&ffn);
     let lst_at = table.len();
@@ -1352,6 +1352,22 @@ fn fields_and_hyperlinks() {
     };
     assert_eq!(instr, "PAGE");
     assert_eq!(result, "3");
+}
+
+#[test]
+fn hyperlink_target_sublocation_and_quotes() {
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK "http://example.com" \l "heading""#), Some("http://example.com#heading".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK \l "heading""#), Some("#heading".into()));
+    assert_eq!(super::hyperlink_target(r#"Hyperlink "http://example.com/a path""#), Some("http://example.com/a path".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK "http://example.com" \o "Help text""#), Some("http://example.com".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK \l "bm" \o "tip""#), Some("#bm".into()));
+}
+
+/// A field whose name only starts with HYPERLINK is not a hyperlink.
+#[test]
+fn hyperlink_target_needs_the_whole_field_name() {
+    assert_eq!(super::hyperlink_target(r#"HYPERLINKS "x""#), None);
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK	"http://example.com""#), Some("http://example.com".into()));
 }
 
 #[test]
@@ -2329,4 +2345,50 @@ fn sprm_t_cell_width_twips_and_percentage() {
     assert_eq!(table.rows[0].cells[0].props.width, Some(72.0));
     assert_eq!(table.rows[0].cells[1].props.width, Some(72.0));
     assert_eq!(table.rows[0].cells[2].props.width_pct, Some(50.0));
+}
+
+// ---------------------------------------------------------------------------------------------
+// #1767: symbol runs and paragraph borders.
+
+/// Word stores a symbol character (Insert › Symbol) as the placeholder U+0028 plus
+/// `sprmCSymbol` (0x6A09), which carries the font table index and the character code
+/// ([MS-DOC] §2.6.1 CSymbolOperand); the text stream alone would read "(".
+#[test]
+fn symbol_runs_read_the_character_and_font_from_sprm_c_symbol() {
+    let text = "(\r";
+    // ftc = 1 (Wingdings), xchar = F071: the box Word draws for Wingdings 0x71.
+    let sym = [1u16.to_le_bytes(), 0xF071u16.to_le_bytes()].concat();
+    let spec = StructSpec { text, chpx_runs: vec![(0, grpprl(&[(0x6A09, &sym)]))], ..structured_spec(text, text.chars().count() as u32) };
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let p = doc.body.first().and_then(|b| b.as_para()).expect("paragraph");
+    assert_eq!(p.text, "\u{F071}", "the symbol, not the placeholder");
+    assert_eq!(p.props_of_char(0).font.as_deref(), Some("Wingdings"), "its font from the font table");
+}
+
+/// Paragraph borders around a block are read from both storage forms: the Word 97 Brc80
+/// (palette colour) and the Word 2000+ BrcOperand (cb + Brc with a full colour).
+#[test]
+fn paragraph_borders_read_from_both_forms() {
+    let b80 = [8u8, 0x01, 0x06, 0x01]; // 1 pt single line, palette red (6), 1 pt from the text
+    let brc = [8u8, 0xFF, 0x00, 0x00, 0x00, 8, 0x01, 0x02, 0x00]; // cb 8, red COLORREF, 1 pt single, space 2
+    let text = "boxed\r\r";
+    let spec = StructSpec {
+        text,
+        papx_entries: vec![
+            (0, 0, grpprl(&[(0x6424, &b80), (0x6425, &b80), (0x6426, &b80), (0x6427, &b80), (0x6428, &b80)])),
+            (6, 0, grpprl(&[(0xC64E, &brc)])),
+        ],
+        ..structured_spec(text, text.chars().count() as u32)
+    };
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let p0 = doc.body.first().and_then(|b| b.as_para()).expect("first paragraph");
+    let b = p0.props.borders.expect("borders");
+    let top = b.top.expect("top border");
+    assert_eq!((top.style, top.width, top.space), (wordcraft_doc::props::BorderStyle::Single, 1.0, 1.0));
+    assert_eq!(top.color, Some(wordcraft_doc::Rgb(0xFF, 0, 0)));
+    assert!(b.left.is_some() && b.bottom.is_some() && b.right.is_some() && b.between.is_some());
+    let p1 = doc.body.get(1).and_then(|b| b.as_para()).expect("second paragraph");
+    let top = p1.props.borders.expect("borders").top.expect("top border");
+    assert_eq!((top.style, top.width, top.space), (wordcraft_doc::props::BorderStyle::Single, 1.0, 2.0));
+    assert_eq!(top.color, Some(wordcraft_doc::Rgb(0xFF, 0, 0)));
 }

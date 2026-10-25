@@ -261,10 +261,35 @@ struct Rules {
 /// A rule as parsed from text, before flags become bits: `(flag, cross, strip, add, cont, cond)`.
 type RawRule = (char, bool, String, String, String, String);
 
+/// Most distinct `TRY` characters kept; a hostile `.aff` could otherwise make every suggestion
+/// round cost time and memory proportional to the file size.
+const MAX_TRY_CHARS: usize = 128;
+
+/// Keeps the first [`MAX_TRY_CHARS`] distinct characters of a `TRY` value, in order.
+fn cap_try(s: &str) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for c in s.chars() {
+        if n >= MAX_TRY_CHARS {
+            break;
+        }
+        if !out.contains(c) {
+            out.push(c);
+            n += 1;
+        }
+    }
+    out
+}
+
 /// `0` means empty in Hunspell's strip and append fields.
 fn zero_empty(s: &str) -> String {
     if s == "0" { String::new() } else { s.to_string() }
 }
+
+/// U+FE0F VARIATION SELECTOR-16 asks for the emoji form of the character before it. A dictionary
+/// that uses an emoji as a flag may write it after the flag (RLA-ES Spanish: `PFX ☎️`, `banco/S☎️`),
+/// but it is not a flag of its own: it is dropped wherever flags are read.
+const EMOJI_SELECTOR: char = '\u{fe0f}';
 
 /// Read Hunspell `.aff` text (already decoded to UTF-8).
 fn parse_aff(aff: &str) -> Result<Rules, String> {
@@ -290,7 +315,7 @@ fn parse_aff(aff: &str) -> Result<Rules, String> {
                 }
             }
             directive @ ("FORBIDDENWORD" | "NOSUGGEST") => {
-                let mut it = at(1).chars();
+                let mut it = at(1).chars().filter(|&c| c != EMOJI_SELECTOR);
                 match (it.next(), it.next()) {
                     (Some(c), None) if !c.is_whitespace() => {
                         if directive == "FORBIDDENWORD" {
@@ -302,7 +327,7 @@ fn parse_aff(aff: &str) -> Result<Rules, String> {
                     _ => return Err(format!("line {}: {directive} needs one flag character", n + 1)),
                 }
             }
-            "TRY" => r.try_chars = at(1).to_string(),
+            "TRY" => r.try_chars = cap_try(at(1)),
             "KEY" => r.key = at(1).to_string(),
             "MAP" => {
                 if !map_header && at(1).parse::<usize>().is_ok() {
@@ -320,7 +345,7 @@ fn parse_aff(aff: &str) -> Result<Rules, String> {
             }
             "PFX" | "SFX" => {
                 let suffix = dir == "SFX";
-                let mut flag_chars = at(1).chars();
+                let mut flag_chars = at(1).chars().filter(|&c| c != EMOJI_SELECTOR);
                 let (Some(flag), None) = (flag_chars.next(), flag_chars.next()) else {
                     return Err(format!("line {}: flag `{}` is not one character", n + 1, at(1)));
                 };
@@ -377,7 +402,9 @@ impl AffixDict {
             let mut in_flags = false;
             while let Some(c) = chars.next() {
                 if in_flags {
-                    flags.push(c);
+                    if c != EMOJI_SELECTOR {
+                        flags.push(c);
+                    }
                 } else if c == '\\' && chars.peek() == Some(&'/') {
                     word.push('/');
                     chars.next();
@@ -868,7 +895,7 @@ impl AffixDict {
             let f: Vec<&str> = line.split_whitespace().collect();
             let at = |k: usize| f.get(k).copied().unwrap_or("");
             match at(0) {
-                "TRY" => rules.try_chars = at(1).to_string(),
+                "TRY" => rules.try_chars = cap_try(at(1)),
                 "KEY" => rules.key = at(1).to_string(),
                 "MAP" => rules.map.push(at(1).chars().collect()),
                 "REP" => rules.rep.push((at(1).replace('_', " "), at(2).replace('_', " "))),
@@ -975,6 +1002,29 @@ pub(crate) mod tests {
         assert_eq!(AffixDict::from_bytes(&hash.to_bytes()).unwrap().key(), "a#b");
     }
 
+    #[test]
+    fn try_alphabet_is_capped_and_deduplicated() {
+        let aff = format!("TRY {}\n", "abcdefghijklmnopqrstuvwxyz".repeat(10_000));
+        let d = AffixDict::from_hunspell(&aff, "1\nkot\n", &[]).unwrap();
+        assert_eq!(d.try_chars(), "abcdefghijklmnopqrstuvwxyz");
+        let compact = AffixDict::from_bytes(&d.to_bytes()).unwrap();
+        assert_eq!(compact.try_chars(), "abcdefghijklmnopqrstuvwxyz");
+
+        // More distinct characters than the cap, each repeated: keep the first 128 in order.
+        let many: String = (0x100u32..0x100 + 300).filter_map(char::from_u32).collect();
+        let aff = format!("TRY {many}{many}\n");
+        let want: String = many.chars().take(128).collect();
+        let d = AffixDict::from_hunspell(&aff, "1\nkot\n", &[]).unwrap();
+        assert_eq!(d.try_chars(), want);
+        let compact = AffixDict::from_bytes(&d.to_bytes()).unwrap();
+        assert_eq!(compact.try_chars(), want);
+
+        // An oversized TRY line fed straight to the compact reader is capped as well.
+        let raw = format!("{MAGIC}\nTRY {many}{many}\nWORDS\n\0kot\n");
+        let bytes = miniz_oxide::deflate::compress_to_vec(raw.as_bytes(), 6);
+        assert_eq!(AffixDict::from_bytes(&bytes).unwrap().try_chars(), want);
+    }
+
     /// Shared hand-written fixture: collectors must reject every path to NOSUGGEST forms.
     pub(crate) fn assert_nosuggest_is_honoured(suggest: impl Fn(&AffixDict, &str, usize) -> Vec<String>) {
         let aff = "SET UTF-8\nNOSUGGEST N\nFORBIDDENWORD F\nTRY abeklmnostxy\nMAP 1\nMAP ae\nKEY ak\nREP 2\nREP xy toka\nREP zz normal\nPFX X Y 1\nPFX X 0 pre .\nSFX A Y 1\nSFX A 0 ble/B .\nSFX B Y 1\nSFX B 0 s .\n";
@@ -1077,6 +1127,27 @@ pub(crate) mod tests {
             assert!(d.contains("kot") && d.contains("koty"), "{mode}");
         }
         assert!(AffixDict::from_hunspell("FLAG UTF-8\n", "0\n", &[]).is_ok(), "FLAG alone is harmless");
+    }
+
+    #[test]
+    fn emoji_flags_with_a_variation_selector_load() {
+        // RLA-ES (the Spanish dictionaries in LibreOffice and most Linux distributions) writes its
+        // telephone flag as ☎ followed by U+FE0F, in the rule and on the stems.
+        let aff = "SET UTF-8\nFLAG UTF-8\nPFX \u{260e}\u{fe0f} Y 1\nPFX \u{260e}\u{fe0f} 0 tele .\nSFX S Y 1\nSFX S 0 s [aeiou]\n";
+        let d = AffixDict::from_hunspell(aff, "2\nbanco/S\u{260e}\u{fe0f}\nbasura/S\n", &[]).unwrap();
+        assert!(d.contains("banco") && d.contains("bancos"));
+        assert!(d.contains("telebanco") && d.contains("telebancos"), "the ☎ prefix applies");
+        assert!(d.contains("basuras") && !d.contains("telebasura"), "only to stems that carry it");
+        assert!(!d.flag_chars.contains(&EMOJI_SELECTOR), "the selector is not a flag");
+    }
+
+    #[test]
+    fn emoji_forbiddenword_and_nosuggest_flags_load() {
+        // The same selector after the flag of the directives that name one flag.
+        let aff = "SET UTF-8\nFLAG UTF-8\nFORBIDDENWORD \u{260e}\u{fe0f}\nNOSUGGEST \u{1f6ab}\u{fe0f}\n";
+        let d = AffixDict::from_hunspell(aff, "3\nbanco\nbanko/\u{260e}\u{fe0f}\nbancu/\u{1f6ab}\u{fe0f}\n", &[]).unwrap();
+        assert!(d.contains("banco") && d.contains("bancu"));
+        assert!(!d.contains("banko"), "a stem with the FORBIDDENWORD flag is not a word");
     }
 
     #[test]

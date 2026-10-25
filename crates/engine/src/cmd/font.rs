@@ -23,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 fn load_system(s: &mut Session, _v: &Value) -> CmdResult {
-    s.ui_requests.push(json!({"open": "loadSystemFonts"}));
+    s.push_ui_request(json!({"open": "loadSystemFonts"}));
     Ok(json!({"pending": true}))
 }
 
@@ -68,7 +68,7 @@ fn add(s: &mut Session, v: &Value) -> CmdResult {
         }
     } else {
         // From the ribbon: the UI shows a file picker and runs this again with the file.
-        s.ui_requests.push(json!({"open": "addFont"}));
+        s.push_ui_request(json!({"open": "addFont"}));
         return Ok(json!({"pending": true}));
     };
     let r = FontDb::global().install_font(&name, &bytes).map_err(|e| CmdError::Failed(e.to_string()))?;

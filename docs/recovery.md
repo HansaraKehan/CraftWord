@@ -1,7 +1,11 @@
 # Local document recovery
 
 Desktop WordCraft periodically keeps a local copy of unsaved work, including new drafts.
-File › Recover lists available copies. The page opens at startup when copies are found.
+File › Recover lists available copies. The page opens at startup when copies are found,
+unless a document was explicitly created or opened before the startup scan completed.
+In particular, a window launched for New/Open keeps the requested document visible;
+older copies remain available through File › Recover. Recovery uses the regular interface
+palette so its labels and buttons stay readable in light and dark themes.
 Restore opens an unsaved document with no file path. Save As chooses where to keep it.
 Recovery never writes to the original document. AutoSave's permission to write to an earlier
 file is cleared on restore.
@@ -32,7 +36,9 @@ be lost if a crash happens before the next snapshot or while its write is still 
 
 Version 1 snapshots wrap the native JSON document with an id, document name, timestamp and
 monotonic generation. Native JSON now includes media bytes, opaque preserved parts, and
-chart/SmartArt/OLE source markup and relationships. Older JSON without these fields still opens.
+chart/SmartArt/OLE source markup and relationships. Media and preserved parts are written as one
+base64 string each. Older JSON without these fields, or with their bytes as arrays of numbers (as
+written before base64), still opens.
 Paragraph cache revisions are transient and regenerated on load; undo history and selection are
 not part of the document snapshot. Recovery preserves the current in-memory model. It cannot
 recover content already lost during import or make later export more faithful than the exporter.
@@ -50,8 +56,12 @@ Windows is therefore unverified.
 Limits are 256 MiB of encoded JSON per snapshot, 2 GiB of snapshot files per profile, 128 records
 and 16 generations per record during discovery. Ordinarily only two valid generations remain.
 Copies are retained until saved or explicitly discarded; there is no automatic age-based deletion.
-Over-limit writes report an error and retain the previous valid copy. JSON stores binary parts
-as byte arrays, so it can be substantially larger than DOCX. This first version has a fixed
+Over-limit writes report an error and retain the previous valid copy. A failure caused by the
+snapshot itself (the size limit, the folder or disk budget, a value the format cannot keep) is
+not retried until the document changes; other failures, such as a lock or I/O error, are tried
+again at the next interval. Base64 takes 4/3 of a part's size (a 27 MiB picture makes a 36 MiB
+copy), and DOCX compresses, so a copy can still be larger than the DOCX it came from. This first
+version has a fixed
 interval, English fallback for new labels, and no cloud, version-history or browser recovery.
 
 ## Commands and verification
@@ -65,7 +75,7 @@ user restores over dirty work use the existing Save Changes prompt.
 `{"answer":"cancel"}` answers it.
 
 Focused tests are `cargo test -p wordcraft-engine recovery`,
-`cargo test -p wordcraft-engine --test recovery_format`, and
+`cargo test -p wordcraft-engine --test it recovery_format::`, and
 `cargo test -p wordcraft-ui-egui recovery`. They cover lifecycle, preservation, original-file
 protection, failed writes, corruption, locks, password cleanup and the actual recovery buttons.
 The contribution also uses a native SIGKILL/restart replay in temporary profiles for both new

@@ -103,6 +103,14 @@ pub struct AutoCorrectPrefs {
     pub numbering: bool,
     /// Border lines.
     pub border_lines: bool,
+    /// Set left- and first-indent with tabs and backspaces: Tab at the start of a line of a
+    /// paragraph with text indents it instead of typing a tab, and Backspace at its start takes
+    /// the indent back. Off by default.
+    pub tab_indent: bool,
+    /// Built-in Heading styles: a second Enter after a line of five or fewer words that ends in a
+    /// letter or digit makes it Heading 1 (Heading 2 or 3 after one or two leading tabs).
+    /// Off by default.
+    pub heading_styles: bool,
     /// The user's entries: added, or replacing a built-in one.
     pub entries: Vec<(String, String)>,
     /// Built-in entries the user deleted.
@@ -138,6 +146,8 @@ impl Default for AutoCorrectPrefs {
             bullets: true,
             numbering: true,
             border_lines: true,
+            tab_indent: false,
+            heading_styles: false,
             entries: Vec::new(),
             removed: Vec::new(),
             exceptions: Vec::new(),
@@ -195,8 +205,7 @@ impl AutoCorrectPrefs {
             .filter(|(a, _)| !self.removed.iter().any(|r| r == a) && !self.entries.iter().any(|(e, _)| e == a))
             .filter(|(a, _)| self.fractions || !FRACTIONS.contains(a))
             .find(|(a, _)| {
-                *a == word
-                    || (a.chars().all(|c| c.is_lowercase()) && word.to_lowercase() == *a && word.chars().next().is_some_and(char::is_uppercase))
+                *a == word || (a.chars().all(char::is_lowercase) && word.to_lowercase() == *a && word.chars().next().is_some_and(char::is_uppercase))
             })
             .map(|(a, b)| {
                 if *a != word && b.chars().next().is_some_and(char::is_lowercase) {
@@ -249,7 +258,7 @@ impl AutoCorrectPrefs {
         let mut v: Vec<String> = NOT_SENTENCE_END
             .iter()
             .filter(|a| !self.exceptions_removed.iter().any(|r| r.eq_ignore_ascii_case(a)))
-            .map(|a| a.to_string())
+            .map(ToString::to_string)
             .chain(self.exceptions.iter().map(|a| a.to_lowercase()))
             .collect();
         v.sort();
@@ -328,6 +337,8 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         ("bullets", &mut ac.bullets),
         ("numbering", &mut ac.numbering),
         ("borderLines", &mut ac.border_lines),
+        ("tabIndent", &mut ac.tab_indent),
+        ("headingStyles", &mut ac.heading_styles),
         ("autoAddFirstLetter", &mut ac.auto_add_first_letter),
         ("autoAddInitialCaps", &mut ac.auto_add_initial_caps),
     ] {
@@ -401,6 +412,8 @@ fn autocorrect_options(s: &mut Session, v: &Value) -> CmdResult {
         "bullets": ac.bullets,
         "numbering": ac.numbering,
         "borderLines": ac.border_lines,
+        "tabIndent": ac.tab_indent,
+        "headingStyles": ac.heading_styles,
         "autoAddFirstLetter": ac.auto_add_first_letter,
         "autoAddInitialCaps": ac.auto_add_initial_caps,
         "entries": ac.list().into_iter().map(|(a, b, builtin)| json!({"from": a, "to": b, "builtIn": builtin})).collect::<Vec<_>>(),
@@ -438,7 +451,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         CommandSpec::new("tools.autocorrect", "AutoCorrect Options", "File › Options › Proofing", autocorrect_options)
             .params(
-                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "autoAddFirstLetter"|"autoAddInitialCaps"?: bool (Automatically add words to the exception lists when an automatic capital is undone; default true), "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
+                r#"{"enabled"?: bool (all of AutoCorrect), "replaceText"|"twoInitialCaps"|"capSentences"|"capCells"|"capDays"|"capsLock"|"smartQuotes"|"fractions"|"ordinals"|"dashes"|"links"|"bullets"|"numbering"|"borderLines"?: bool, "tabIndent"?: bool (Set left- and first-indent with tabs and backspaces; default false), "headingStyles"?: bool (Built-in Heading styles; default false), "autoAddFirstLetter"|"autoAddInitialCaps"?: bool (Automatically add words to the exception lists when an automatic capital is undone; default true), "add"?: {"from": string, "to": string} (adds or replaces an entry), "delete"?: string (an entry's "from", built in or added), "addException"?: string, "deleteException"?: string, "addInitialCapsException"?: string (keeps TWo INitial CApitals, like "IDs"), "deleteInitialCapsException"?: string} → options, entries and exceptions"#,
             )
             .pure(),
         CommandSpec::new("tools.customizeKeyboard", "Customize Keyboard", "File › Options", customize_keyboard)
@@ -460,23 +473,48 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("review.combine", "Combine", "Review › Compare", compare).params(COMPARE_PARAMS),
         CommandSpec::new("file.accessibility", "Check Accessibility", "Review › Accessibility", accessibility).pure(),
         CommandSpec::new("file.inspect", "Inspect Document", "File › Info", inspect_doc)
-            .params(r#"{"remove"?: ["comments", "revisions", "properties", "hidden", "headers"]} → {found: {comments, revisions, properties, hiddenText, hiddenCount, hidden: [{story: "body|header|footer|footnote|endnote|comment|textBox", part?, text}] (at most 1000), truncated, unsupported: [{story, object: "table|opaque", ..}] (hidden text not inspected: table styles, verbatim objects), headers}, removed, residual: [..] (hidden text a removal couldn't reach), removedNotes: [{kind, part, text}] (notes whose hidden reference was removed)}; whole hidden paragraphs go with their marks"#),
+            .params(r#"{"remove"?: ["comments", "revisions", "properties", "hidden", "headers"]} → {found: {comments, revisions, properties, hiddenText, hiddenCount, hidden: [{story: "body|header|footer|footnote|endnote|comment|textBox", part?, text}] (at most 1000), truncated, unsupported: [{story, object: "table|opaque", ..}] (hidden text not inspected: table styles, verbatim objects), headers}, removed, residual: [..] (hidden text a removal couldn't reach), removedNotes: [{kind, part, text}] (notes whose hidden reference was removed)}; whole hidden paragraphs go with their marks; the removals are refused while the document tracks changes"#),
         CommandSpec::new("file.protect", "Protect Document", "File › Info", |s, v| {
             let mode = p::str(v, "mode").unwrap_or("readOnly");
             s.run("review.restrict", &json!({"mode": mode}))
         })
-        .params(r#"{"mode": "none|readOnly|comments|trackedChanges"}"#),
+        .params(r#"{"mode": "none|readOnly|comments|trackedChanges"} (starting enforcement; "none" doesn't stop a protected document — use review.restrict {"stop": true})"#),
         CommandSpec::new("file.versions", "Version History", "File › Info", |s, v| {
+            // Validate a restore before anything is saved: a rejected command must leave the
+            // version list as it was. A `restore` that is there but not a non-negative integer
+            // is refused, not read as absent.
+            let restore = if v.get("restore").is_some_and(|x| !x.is_null()) {
+                let i = p::u64(v, "restore").ok_or_else(|| CmdError::Params("restore (non-negative integer) is required".into()))?;
+                // A `u64` that doesn't fit in `usize` names no version: `as usize` would wrap it
+                // to a small index on a 32-bit target and restore the wrong document.
+                let i = usize::try_from(i).map_err(|_| CmdError::Params("no such version".into()))?;
+                let version = s.versions.get(i).cloned().ok_or_else(|| CmdError::Params("no such version".into()))?;
+                // The restore replaces the whole document, including the content the protection
+                // kept read-only, so the protection is stopped first (with its password, when it
+                // has one) — a restore must not go around it.
+                super::protect::check_version_restore(s)?;
+                Some(version)
+            } else {
+                None
+            };
             if let Some(label) = p::str(v, "save") {
                 s.versions.push((label.to_string(), super::now_iso(), s.doc.clone()));
                 if s.versions.len() > 50 {
                     s.versions.remove(0);
                 }
             }
-            if let Some(i) = p::u64(v, "restore") {
-                let (_, _, d) = s.versions.get(i as usize).cloned().ok_or_else(|| CmdError::Params("no such version".into()))?;
+            if let Some((_, _, d)) = restore {
                 s.checkpoint("Restore Version");
+                // A snapshot's own protection is stale: it was taken at some earlier moment, and
+                // restoring it must not bring a protection back that the live document doesn't
+                // have (#1327 follow-up).
+                let protection = s.doc.settings.protection.clone();
+                let protect_hash = s.doc.settings.protect_hash.clone();
+                let protect_formatting = s.doc.settings.protect_formatting;
                 s.doc = d;
+                s.doc.settings.protection = protection;
+                s.doc.settings.protect_hash = protect_hash;
+                s.doc.settings.protect_formatting = protect_formatting;
                 s.touch();
                 s.clamp_selection();
             }
@@ -489,17 +527,20 @@ pub fn specs() -> Vec<CommandSpec> {
         .pure(),
         CommandSpec::new("file.newFromTemplate", "New from Template", "File › New", |s, v| {
             let path = p::req_str(v, "path")?;
-            let doc = crate::io::open_path(std::path::Path::new(path)).map_err(CmdError::Failed)?;
+            let mut doc = crate::io::open_path(std::path::Path::new(path)).map_err(CmdError::Failed)?;
+            // As in Word, the new document is attached to the template it came from (#2852).
+            doc.settings.attached_template = Some(path.to_string());
             s.set_document(doc);
             s.path = None;
             s.dirty = true;
             sel_result(s)
         })
-        .params(r#"{"path": string}"#)
+        .params(r#"{"path": string} → a new, untitled document from the template, attached to it"#)
         .pure(),
         CommandSpec::new("file.saveTemplate", "Save as Template", "File › Save As", |s, v| {
             let path = p::req_str(v, "path")?;
-            let path = if path.ends_with(".dotx") { path.to_string() } else { format!("{path}.dotx") };
+            // A .dotm keeps its name (#2852); anything else becomes a .dotx.
+            let path = if super::user_templates::is_template_name(path) { path.to_string() } else { format!("{path}.dotx") };
             crate::io::save_path(std::path::Path::new(&path), &s.doc).map_err(CmdError::Failed)?;
             Ok(json!({"path": path}))
         })
@@ -523,7 +564,7 @@ pub fn specs() -> Vec<CommandSpec> {
         })
         .pure(),
         CommandSpec::new("file.share", "Share", "File", |s, _| {
-            s.ui_requests.push(json!({"open": "saveAs"}));
+            s.push_ui_request(json!({"open": "saveAs"}));
             Ok(json!({"hint": "Save or export a copy (PDF, Word document) to share it."}))
         })
         .pure(),
@@ -629,14 +670,19 @@ pub fn specs() -> Vec<CommandSpec> {
         .params(r#"{"header"?: pt, "footer"?: pt}"#),
         CommandSpec::new("table.cellMargins", "Cell Margins", "Table Layout › Alignment", |s, v| {
             let Some((tp, _, _)) = s.sel.focus.path.cell() else { return Err(CmdError::Disabled("not in a table".into())) };
+            let story = s.sel.focus.story;
+            let current = {
+                let table = s.doc.table(story, &tp).ok_or_else(|| CmdError::Failed("no table".into()))?;
+                let style = table.props.style.as_deref().and_then(|id| s.doc.styles.table_style(id));
+                table.props.cell_margins.or(style.and_then(|st| st.parts.cell_margins)).unwrap_or([0.0, 5.4, 0.0, 5.4])
+            };
             let m = [
-                p::f32(v, "top").unwrap_or(0.0),
-                p::f32(v, "left").unwrap_or(5.4),
-                p::f32(v, "bottom").unwrap_or(0.0),
-                p::f32(v, "right").unwrap_or(5.4),
+                p::f32(v, "top").unwrap_or(current[0]),
+                p::f32(v, "left").unwrap_or(current[1]),
+                p::f32(v, "bottom").unwrap_or(current[2]),
+                p::f32(v, "right").unwrap_or(current[3]),
             ]
             .map(|x| x.clamp(0.0, 144.0));
-            let story = s.sel.focus.story;
             s.doc.table_mut(story, &tp)?.props.cell_margins = Some(m);
             for path in s.doc.para_paths(story).into_iter().filter(|p| p.0.starts_with(&tp.0) && p.0.len() > tp.0.len()) {
                 s.doc.para_mut(story, &path)?.touch();
@@ -699,7 +745,7 @@ pub fn specs() -> Vec<CommandSpec> {
         })
         .params(r#"{"format": "decimal|upperRoman|lowerLetter…", "text"?: "%1.", "start"?: n}"#),
         CommandSpec::new("review.language", "Language", "Review › Language", language).params(
-            r#"{"lang"?: "en-US|en-GB|pl-PL|fr-FR|…" (BCP 47; default en-US), "noProof"?: bool, "detect"?: bool (detect language automatically, a preference), "default"?: bool (also the document's default language)}"#,
+            r#"{"lang"?: "en-US|en-GB|pl-PL|fr-FR|…" (BCP 47; default en-US), "noProof"?: bool, "detect"?: bool (detect language automatically, a preference), "default"?: bool (also the document's default and the saved language for future blank documents)}"#,
         ),
         CommandSpec::new("review.showMarkup", "Show Markup", "Review › Tracking", |s, v| {
             s.view.show_markup = p::bool(v, "value").unwrap_or(!s.view.show_markup);
@@ -752,7 +798,8 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// Set Proofing Language: the selection's language and "do not check spelling or grammar",
-/// or (`default`) the document's default language; `detect` is the per-user preference.
+/// or (`default`) the document's default and the saved language for future blank documents;
+/// `detect` is the per-user detection preference.
 /// Nothing at all sets US English, as before.
 fn language(s: &mut Session, v: &Value) -> CmdResult {
     let lang = match p::str(v, "lang") {
@@ -784,14 +831,18 @@ fn language(s: &mut Session, v: &Value) -> CmdResult {
     if lang.is_none() && no_proof.is_none() {
         return Ok(json!({"detect": s.prefs.detect_language}));
     }
-    super::format::apply(s, &|c| {
+    let result = super::format::apply(s, &|c| {
         if let Some(l) = &lang {
             c.lang = Some(l.clone());
         }
         if let Some(np) = no_proof {
             c.no_proof = Some(np);
         }
-    })
+    })?;
+    if p::bool(v, "default") == Some(true) {
+        s.prefs.default_language = lang;
+    }
+    Ok(result)
 }
 
 fn macros(s: &mut Session, v: &Value) -> CmdResult {
@@ -846,7 +897,9 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
     }
     let trigger = if on_enter { 0 } else { last.len_utf8() };
     let Some(body) = before.get(..before.len() - trigger) else { return Ok(()) };
-    let start = body.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+    // The word starts after the last white-space character, whatever its width (a no-break
+    // space is two bytes and an ideographic space is three).
+    let start = body.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
     let Some(mut word) = body.get(start..).map(str::to_string) else { return Ok(()) };
     if word.is_empty() {
         return Ok(());
@@ -892,8 +945,8 @@ pub fn autocorrect_word(s: &mut Session, on_enter: bool) -> Result<(), CmdError>
         word = format!("{}{fixed}{}", word.get(..at).unwrap_or(""), word.get(at + letters.len()..).unwrap_or(""));
     }
     // A whole-word replacement, else "wait..." → "wait…". Proofing decides what is English the
-    // same way (#835).
-    let english = s.doc.para_at(&f).is_none_or(|_| wordcraft_proof::ProofLang::from_tag(lang.as_deref()) == wordcraft_proof::ProofLang::En);
+    // same way (#835); every English (en-GB, en-CA…) counts (#1281).
+    let english = s.doc.para_at(&f).is_none_or(|_| wordcraft_proof::ProofLang::from_tag(lang.as_deref()).is_english());
     let found = if ac.replace_text { ac.replacement_in(&word, english) } else { None };
     let (from, rep) = match found {
         Some(r) => (start, Some(r)),
@@ -1002,7 +1055,7 @@ fn prev_token(before: &str) -> String {
 }
 
 /// Turkish, Azerbaijani (and Crimean Tatar) map `i`/`İ` and `ı`/`I` as pairs (#1923).
-fn is_turkic(lang: Option<&str>) -> bool {
+pub(crate) fn is_turkic(lang: Option<&str>) -> bool {
     if wordcraft_proof::ProofLang::from_tag(lang) == wordcraft_proof::ProofLang::Tr {
         return true; // tr, tur, any region, same normalisation as proofing
     }
@@ -1012,7 +1065,7 @@ fn is_turkic(lang: Option<&str>) -> bool {
 }
 
 /// A letter in capitals: `i` → `İ` in Turkic languages, otherwise the Unicode default.
-fn upper_char(c: char, turkic: bool) -> String {
+pub(crate) fn upper_char(c: char, turkic: bool) -> String {
     if turkic && c == 'i' {
         return "\u{130}".to_string();
     }
@@ -1021,7 +1074,7 @@ fn upper_char(c: char, turkic: bool) -> String {
 
 /// A letter in lowercase: `I` → `ı` in Turkic languages. `İ` is always the single letter `i`,
 /// never `i` plus a combining dot.
-fn lower_char(c: char, turkic: bool) -> String {
+pub(crate) fn lower_char(c: char, turkic: bool) -> String {
     match c {
         'I' if turkic => "\u{131}".to_string(),
         '\u{130}' => "i".to_string(),
@@ -1263,6 +1316,9 @@ fn compare(s: &mut Session, v: &Value) -> CmdResult {
         // The result is a new, untitled document: saving it never overwrites either file.
         s.path = None;
         s.file_name = None;
+        // Version snapshots belong to the document they were taken from, including when
+        // Compare creates an untitled result from the current document.
+        s.clear_versions();
     }
     s.sel = Selection::caret(s.doc.start_of(StoryRef::Body));
     Ok(json!({"changes": changes, "author": author, "notHonoured": not_honoured}))
@@ -1353,6 +1409,67 @@ fn lcs_ops<T: PartialEq>(a: &[T], b: &[T]) -> Vec<Op> {
     ops
 }
 
+/// How short an interior match can be, inside a run of edits, before it's folded into the
+/// surrounding delete/insert instead of staying its own little island of "same" text. Two short
+/// strings that happen to share a character in a different order (common with digits in dates,
+/// IDs, phone numbers) otherwise come out of `lcs_ops` as a true shortest edit script, but render
+/// as a "ransom note" of alternating single-character deletions and insertions where a reader
+/// (and Word) would expect one clean replacement.
+const NOISE_MATCH_LEN: usize = 1;
+
+/// Folds single-token matches that sit strictly inside a run of edits into the surrounding
+/// delete/insert, so a character-level diff doesn't fragment a replaced run. A matched run that
+/// opens or closes the whole sequence is the genuine common prefix/suffix `lcs_ops` already
+/// stripped before running its table, so it's left untouched regardless of length; only a short
+/// match produced by the table's own backtracking, which can only ever be interior, is a
+/// candidate.
+fn collapse_noise_matches(ops: &[Op]) -> Vec<Op> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Keep,
+        Fold,
+    }
+    let mut runs: Vec<(Op, usize, Kind)> = Vec::new();
+    let mut k = 0;
+    while k < ops.len() {
+        let op = ops[k];
+        let len = ops[k..].iter().take_while(|o| **o == op).count();
+        let kind = if op == Op::Same && k != 0 && k + len != ops.len() && len <= NOISE_MATCH_LEN { Kind::Fold } else { Kind::Keep };
+        runs.push((op, len, kind));
+        k += len;
+    }
+    if !runs.iter().any(|(_, _, kind)| *kind == Kind::Fold) {
+        return ops.to_vec();
+    }
+    let mut out = Vec::with_capacity(ops.len());
+    let mut i = 0;
+    while i < runs.len() {
+        if runs[i].0 == Op::Same && runs[i].2 == Kind::Keep {
+            out.extend(std::iter::repeat_n(Op::Same, runs[i].1));
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < runs.len() && !(runs[i].0 == Op::Same && runs[i].2 == Kind::Keep) {
+            i += 1;
+        }
+        let region = &runs[start..i];
+        if region.iter().any(|(_, _, kind)| *kind == Kind::Fold) {
+            // Flatten the region: every original character first (in its own order), then every
+            // revised character (in its own order) — one clean delete, one clean insert.
+            let dels: usize = region.iter().map(|(op, len, kind)| if *kind == Kind::Fold || *op == Op::Del { *len } else { 0 }).sum();
+            let inss: usize = region.iter().map(|(op, len, kind)| if *kind == Kind::Fold || *op == Op::Ins { *len } else { 0 }).sum();
+            out.extend(std::iter::repeat_n(Op::Del, dels));
+            out.extend(std::iter::repeat_n(Op::Ins, inss));
+        } else {
+            for (op, len, _) in region {
+                out.extend(std::iter::repeat_n(*op, *len));
+            }
+        }
+    }
+    out
+}
+
 /// Words with the spaces after them ("The ", "cat "), or single characters.
 fn tokens(s: &str, characters: bool) -> Vec<String> {
     if characters {
@@ -1377,6 +1494,10 @@ fn word_diff(a: &Paragraph, b: &Paragraph, ins: u32, del: u32, opts: &CompareOpt
     let chars = opts.characters && at.chars().count().max(bt.chars().count()) <= MAX_CHAR_DIFF;
     let (ta, tb) = (tokens(&at, chars), tokens(&bt, chars));
     let ops = lcs_ops(&ta.iter().map(|t| opts.key(t)).collect::<Vec<_>>(), &tb.iter().map(|t| opts.key(t)).collect::<Vec<_>>());
+    // Only at character granularity: a matched whole word almost never happens by coincidence,
+    // but a matched single character very often does (digits, punctuation), so only there does
+    // a short interior match need folding back into its surrounding edit.
+    let ops = if chars { collapse_noise_matches(&ops) } else { ops };
     let mut p = Paragraph::new();
     p.props = b.props.clone();
     let base = a.runs.first().map(|r| r.props.clone()).unwrap_or_default();
@@ -1411,6 +1532,13 @@ fn accessibility(s: &mut Session, _: &Value) -> CmdResult {
 fn inspect_doc(s: &mut Session, v: &Value) -> CmdResult {
     let remove: Vec<String> =
         v.get("remove").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    // The removals aren't tracked: they delete straight from the document, so on a document that
+    // tracks changes the text would go with no revision to show for it, and the revision trail
+    // would be broken behind the user's back. Refuse the whole removal instead of quietly
+    // untracking it. Reading the document (no `remove`) is always allowed.
+    if !remove.is_empty() && s.doc.settings.track_changes {
+        return Err(CmdError::Disabled("the document tracks changes: stop tracking before removing content".into()));
+    }
     let hidden = hidden_text(&s.doc);
     let report = json!({
         "comments": s.doc.comments.len(),
@@ -1843,7 +1971,7 @@ fn customize_keyboard(s: &mut Session, v: &Value) -> CmdResult {
     }
     out.insert("custom".into(), serde_json::to_value(&s.keymap).unwrap_or(Value::Null));
     if !asked {
-        s.ui_requests.push(json!({"open": "customizeKeyboard"}));
+        s.push_ui_request(json!({"open": "customizeKeyboard"}));
     }
     Ok(Value::Object(out))
 }
@@ -1852,7 +1980,7 @@ fn customize_keyboard(s: &mut Session, v: &Value) -> CmdResult {
 /// with no query, the Search box (`ui_requests` → the UI's command search).
 fn search_commands(s: &mut Session, v: &Value) -> CmdResult {
     let Some(query) = p::str(v, "query") else {
-        s.ui_requests.push(json!({"open": "commands"}));
+        s.push_ui_request(json!({"open": "commands"}));
         return Ok(json!({"matches": []}));
     };
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
@@ -1948,7 +2076,7 @@ fn customize_ribbon(s: &mut Session, v: &Value) -> CmdResult {
     out.insert("tabs".into(), serde_json::to_value(l.tabs().as_ref()).unwrap_or(Value::Null));
     out.insert("qat".into(), json!(l.qat()));
     if !asked {
-        s.ui_requests.push(json!({"open": "customizeRibbon"}));
+        s.push_ui_request(json!({"open": "customizeRibbon"}));
     }
     Ok(Value::Object(out))
 }
@@ -1986,6 +2114,18 @@ mod tests {
         let p = s.doc.body[0].as_para().unwrap();
         let deleted: String = p.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| p.text[r].to_string()).collect();
         assert_eq!(deleted, "u");
+        // Two dates that happen to share digits in a different order ("01.09.2026" vs
+        // "19.10.2026") must come out as one clean replacement, not a scrambled chain of
+        // single-character deletions and insertions wherever a digit coincidentally recurs.
+        let mut s = Session::new(Document::from_text("zawarta w dniu 01.09.2026 pomiędzy:"));
+        s.run("review.compare", &json!({"text": "zawarta w dniu 19.10.2026 pomiędzy:", "level": "character"})).unwrap();
+        let p = s.doc.body[0].as_para().unwrap();
+        let deleted: String = p.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| p.text[r].to_string()).collect();
+        let inserted: String = p.run_ranges().filter(|(_, c)| c.ins.is_some()).map(|(r, _)| p.text[r].to_string()).collect();
+        assert_eq!(deleted, "01.09");
+        assert_eq!(inserted, "19.10");
+        assert_eq!(p.run_ranges().filter(|(_, c)| c.del.is_some()).count(), 1, "one clean deleted run, not several scattered ones");
+        assert_eq!(p.run_ranges().filter(|(_, c)| c.ins.is_some()).count(), 1, "one clean inserted run, not several scattered ones");
         // Formatting differences become formatting changes.
         let mut s = Session::new(Document::from_text("Same words."));
         let mut rev = Document::from_text("Same words.");
@@ -1996,6 +2136,33 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(r["changes"], 1);
         assert!(s.doc.revisions.iter().any(|x| x.kind == RevisionKind::Format));
+    }
+
+    #[test]
+    fn collapse_noise_matches_merges_short_interior_runs_but_keeps_prefix_suffix() {
+        // "01.09" vs "19.10": a pure LCS finds a scrambled chain of single-character matches
+        // ('1', '.', '0') threaded through what a reader expects to be one clean replacement.
+        let ops = lcs_ops(&['0', '1', '.', '0', '9'], &['1', '9', '.', '1', '0']);
+        assert!(ops.contains(&Op::Same), "the raw LCS does find spurious matches here, or this test proves nothing");
+        assert_eq!(collapse_noise_matches(&ops), vec![Op::Del, Op::Del, Op::Del, Op::Del, Op::Del, Op::Ins, Op::Ins, Op::Ins, Op::Ins, Op::Ins]);
+        // A plain single-character replacement flanked by a real common prefix and suffix has no
+        // interior match to begin with (the DP's middle is pure delete/insert), so it's untouched.
+        let ops = lcs_ops(&['a', 'b', 'c', 'x', 'd', 'e', 'f'], &['a', 'b', 'c', 'y', 'd', 'e', 'f']);
+        assert_eq!(collapse_noise_matches(&ops), ops);
+    }
+
+    #[test]
+    fn compare_at_word_level_still_matches_a_whole_unchanged_word() {
+        // `collapse_noise_matches` only runs for character-level compares (wired up in
+        // `word_diff`): a single matched *word* between two edits is a real, meaningful match
+        // (unlike a single matched character), and must never be folded into a replacement.
+        let mut s = Session::new(Document::from_text("the cat sat"));
+        s.run("review.compare", &json!({"text": "a cat ran"})).unwrap();
+        let p = s.doc.body[0].as_para().unwrap();
+        assert!(
+            p.run_ranges().any(|(r, c)| c.del.is_none() && c.ins.is_none() && p.text[r].trim() == "cat"),
+            "the unchanged word must survive as plain text"
+        );
     }
 
     #[test]
@@ -2025,7 +2192,11 @@ mod tests {
         let mut s = Session::new(Document::from_text("locked"));
         s.run("review.restrict", &json!({"mode": "readOnly"})).unwrap();
         assert!(s.run("text.insert", &json!({"text": "x"})).is_err());
-        s.run("review.restrict", &json!({"mode": "none"})).unwrap();
+        // The "none" mode is the shorthand for stopping the protection, and it doesn't stop a
+        // protected document: only the explicit stop does (#1327 follow-up).
+        assert!(s.run("review.restrict", &json!({"mode": "none"})).is_err());
+        assert!(s.run("text.insert", &json!({"text": "x"})).is_err());
+        s.run("review.restrict", &json!({"stop": true})).unwrap();
         assert!(s.run("text.insert", &json!({"text": "x"})).is_ok());
     }
 
@@ -2054,5 +2225,41 @@ mod tests {
         s.run("review.language", &json!({"lang": "de-DE", "default": true})).unwrap();
         assert_eq!(s.doc.styles.default_chr.lang.as_deref(), Some("de-DE"));
         assert!(s.run("review.language", &json!({"lang": "<script>"})).is_err());
+    }
+
+    /// The inspector's removals delete straight from the document, so they aren't tracked: on a
+    /// document that tracks changes the text would go with no revision to show for it, and the
+    /// revision trail would be broken behind the user's back. The removal is refused instead,
+    /// and the document is left as it was.
+    #[test]
+    fn inspect_removals_are_refused_while_the_document_tracks_changes() {
+        let mut s = Session::new(Document::from_text("Visible text.\nHidden text."));
+        s.run("select.text", &json!({"text": "Hidden"})).unwrap();
+        s.run("format.hidden", &json!({"value": true})).unwrap();
+        // Tracking without Restrict Editing isolates the Inspector guard from the protected
+        // document check added separately in #3285.
+        s.run("review.trackChanges", &json!({"value": true})).unwrap();
+        assert!(s.doc.settings.track_changes, "the document doesn't track changes");
+        let before = s.doc.clone();
+        let err = s.run("file.inspect", &json!({"remove": ["hidden"]})).unwrap_err();
+        assert!(matches!(err, CmdError::Disabled(_)), "{err}");
+        assert_eq!(s.doc, before, "the document changed despite the refusal");
+        // Reading the document stays allowed.
+        let found = s.run("file.inspect", &json!({})).unwrap();
+        assert_eq!(found["found"]["hiddenText"], true, "{found}");
+    }
+
+    /// A document that doesn't track changes is inspected as before: the hidden text goes.
+    #[test]
+    fn inspect_removals_work_when_the_document_does_not_track_changes() {
+        let mut s = Session::new(Document::from_text("Visible text.\nHidden text."));
+        s.run("select.text", &json!({"text": "Hidden"})).unwrap();
+        s.run("format.hidden", &json!({"value": true})).unwrap();
+        assert!(!s.doc.settings.track_changes);
+        let out = s.run("file.inspect", &json!({"remove": ["hidden"]})).unwrap();
+        assert_eq!(out["residual"], json!([]), "{out}");
+        let text = s.doc.plain_text(StoryRef::Body);
+        assert!(!text.contains("Hidden"), "the hidden text is still there: {text}");
+        assert!(text.contains("Visible text."), "{text}");
     }
 }

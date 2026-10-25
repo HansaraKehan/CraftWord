@@ -134,7 +134,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 t @ ("find" | "replace" | "goto") => t,
                 other => return Err(CmdError::Params(format!("`tab` is find, replace or goto, not `{other}`"))),
             };
-            s.ui_requests.push(json!({"open": tab}));
+            s.push_ui_request(json!({"open": tab}));
             Ok(json!({"open": tab}))
         })
         // Word for Mac's own key is ⌃H.
@@ -603,7 +603,7 @@ fn find(s: &mut Session, v: &Value) -> CmdResult {
         // Word's Ctrl+F: the Navigation pane with its search box ready to type in (#712); the
         // Find and Replace dialog is Advanced Find.
         s.view.nav_pane = true;
-        s.ui_requests.push(json!({"focus": "navSearch"}));
+        s.push_ui_request(json!({"focus": "navSearch"}));
         return Ok(json!({"count": s.find.results.len()}));
     }
     let story = s.sel.focus.story;
@@ -624,7 +624,7 @@ fn find(s: &mut Session, v: &Value) -> CmdResult {
 /// Find in the classic dialog: every match in the body or the selection, optionally highlighted while you read.
 fn advanced_find(s: &mut Session, v: &Value) -> CmdResult {
     if p::str(v, "text").is_none() && v.get("highlight").is_none() {
-        s.ui_requests.push(json!({"open": "find"}));
+        s.push_ui_request(json!({"open": "find"}));
         return Ok(json!({"count": s.find.results.len()}));
     }
     read_opts(s, v);
@@ -670,7 +670,17 @@ fn step(s: &mut Session, dir: i64) -> CmdResult {
     Ok(json!({"index": idx, "count": n}))
 }
 
+/// Replace needs something to look for: the `text` given, or the last search's (Find then Replace
+/// with just a `with`). Neither is a call that would silently replace nothing (a misspelt `text`).
+fn need_query(s: &Session, v: &Value) -> Result<(), CmdError> {
+    if p::str(v, "text").is_none() && s.find.query.is_empty() {
+        return Err(CmdError::Params("`text` (string) is required".into()));
+    }
+    Ok(())
+}
+
 fn replace(s: &mut Session, v: &Value) -> CmdResult {
+    need_query(s, v)?;
     read_opts(s, v);
     let story = s.sel.focus.story;
     let results = search_full(s, story, true)?;
@@ -686,6 +696,7 @@ fn replace(s: &mut Session, v: &Value) -> CmdResult {
 /// Every match replaced, last first so earlier positions stay valid (one undo step). A `\r` in
 /// the replacement (`^p`) splits the paragraph.
 fn replace_all(s: &mut Session, v: &Value) -> CmdResult {
+    need_query(s, v)?;
     read_opts(s, v);
     let story = s.sel.focus.story;
     let results = search_full(s, story, true)?;
@@ -737,7 +748,7 @@ fn goto(s: &mut Session, v: &Value) -> CmdResult {
             s.sel = Selection::caret(t);
             s.page_hint = idx;
         }
-        s.ui_requests.push(json!({"scrollTo": "caret"}));
+        s.push_ui_request(json!({"scrollTo": "caret"}));
         return sel_result(s);
     }
     if let Some(name) = p::str(v, "bookmark") {
@@ -758,7 +769,7 @@ fn goto(s: &mut Session, v: &Value) -> CmdResult {
         }
         return sel_result(s);
     }
-    s.ui_requests.push(json!({"open": "goto"}));
+    s.push_ui_request(json!({"open": "goto"}));
     sel_result(s)
 }
 

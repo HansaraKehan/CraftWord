@@ -82,16 +82,17 @@ impl ChartDataForm {
         Ok(json!({"data": {"categories": self.categories, "series": series}}))
     }
 
+    // Default names become document text (saved and exported), so no isolate marks.
     fn add_row(&mut self) {
         if self.categories.len() < MAX_POINTS {
-            self.categories.push(crate::i18n::fmt(tl!("Category {n}"), &[("n", &(self.categories.len() + 1).to_string())]));
+            self.categories.push(crate::i18n::fmt_plain(tl!("Category {n}"), &[("n", &(self.categories.len() + 1).to_string())]));
             self.cells.push(vec![String::new(); self.names.len()]);
         }
     }
 
     fn add_series(&mut self) {
         if self.names.len() < MAX_SERIES {
-            self.names.push(crate::i18n::fmt(tl!("Series {n}"), &[("n", &(self.names.len() + 1).to_string())]));
+            self.names.push(crate::i18n::fmt_plain(tl!("Series {n}"), &[("n", &(self.names.len() + 1).to_string())]));
             for r in &mut self.cells {
                 r.push(String::new());
             }
@@ -355,5 +356,20 @@ mod tests {
         assert!(p["data"]["series"][3]["values"][1].is_null());
         f.cells[1][0] = "abc".into();
         assert!(f.params().is_err());
+    }
+
+    /// Default names are saved into the document, so an RTL interface must not add isolate marks.
+    #[test]
+    fn default_names_in_an_rtl_interface_have_no_isolates() {
+        crate::i18n::set_current(crate::i18n::fixture_lang("ar", "\tCategory {n}\tالفئة {n}\n\tSeries {n}\tالسلسلة {n}\n"));
+        let mut f = ChartDataForm::of(&ChartSpec::sample(ChartType::Column));
+        f.add_row();
+        f.add_series();
+        crate::i18n::set_current(crate::i18n::Lang::EN);
+        let (category, series) = (f.categories.last().unwrap(), f.names.last().unwrap());
+        assert!(category.starts_with("الفئة") && series.starts_with("السلسلة"), "{category:?} {series:?}");
+        for name in [category, series] {
+            assert!(!name.chars().any(|c| ('\u{2066}'..='\u{2069}').contains(&c)), "{name:?}");
+        }
     }
 }

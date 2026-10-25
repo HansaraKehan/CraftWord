@@ -121,6 +121,8 @@ impl<'d> EmbedWriter<'d> {
 
     /// A free part name for (a copy of) `orig`: `orig` itself if free, else `stem_N.ext`.
     fn alloc(&mut self, orig: &str) -> String {
+        let clean = valid_part_name(orig);
+        let orig = clean.as_str();
         // Suffixes cannot escape reserved directories or a .rels extension. Such a kept
         // part needs a different base name, otherwise every candidate would be reserved.
         let orig = if Self::reserved(&orig.to_ascii_lowercase()) { "word/embeddings/part.xml" } else { orig };
@@ -585,17 +587,12 @@ fn set_attr(e: &mut El, k: &str, v: &str) {
     }
 }
 
-/// Is attribute `k` a relationship id (see `read::embed::rel_ids`)?
-fn is_rel_attr(k: &str) -> bool {
-    k.starts_with("r:") || k == "o:relid"
-}
-
 fn rel_attr_values(e: &El, out: &mut Vec<String>, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
     for (k, v) in &e.attrs {
-        if is_rel_attr(k) && !out.contains(v) {
+        if xml::is_rel_attr(&e.name, k) && !out.contains(v) {
             out.push(v.clone());
         }
     }
@@ -608,8 +605,9 @@ fn set_rel_ids(e: &mut El, ids: &HashMap<String, String>, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
+    let name = e.name.clone();
     for (k, v) in e.attrs.iter_mut() {
-        if is_rel_attr(k)
+        if xml::is_rel_attr(&name, k)
             && let Some(n) = ids.get(v.as_str())
         {
             *v = n.clone();
@@ -684,6 +682,29 @@ fn pt(v: f32) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// `name` as a valid OPC part name: no backslashes, empty or dot segments, segments ending in a
+/// dot, or encoded separators.
+fn valid_part_name(name: &str) -> String {
+    let mut out = Vec::new();
+    for seg in name.split('/') {
+        let mut seg = seg.replace('\\', "_");
+        for enc in ["%2f", "%5c"] {
+            while let Some(i) = seg.to_ascii_lowercase().find(enc) {
+                seg.replace_range(i..i + 3, "_");
+            }
+        }
+        if seg.is_empty() || seg == "." || seg == ".." {
+            continue;
+        }
+        // A segment can't end in a dot either (`word/a.`).
+        if seg.ends_with('.') {
+            seg = format!("{}_", seg.trim_end_matches('.'));
+        }
+        out.push(seg);
+    }
+    if out.is_empty() { "word/embeddings/part.xml".to_string() } else { out.join("/") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,5 +734,17 @@ mod tests {
         assert_eq!(s, "z-index:3;width:2pt;height:3pt;rotation:329.5;flip:x y");
         // Unturned: no rotation or flip left behind.
         assert_eq!(vml_style_with("rotation:90;flip:y;width:1pt", 2.0, 3.0, &Float::default()), "width:2pt;height:3pt");
+    }
+
+    #[test]
+    fn kept_part_names_are_valid_opc_names() {
+        let doc = wordcraft_doc::Document::default();
+        let mut w = EmbedWriter::new(&doc);
+        for orig in ["word/a\\b.bin", "word/..\\..\\x.bin", "word/a/../b%2Fc.bin", "word/a//./b%5Cc.bin", "word/a./b.bin", "word/a..."] {
+            let name = w.alloc(orig);
+            assert!(!name.contains('\\'), "{name}");
+            assert!(!name.to_ascii_lowercase().contains("%2f") && !name.to_ascii_lowercase().contains("%5c"), "{name}");
+            assert!(name.split('/').all(|s| !s.is_empty() && !s.ends_with('.')), "{name}");
+        }
     }
 }

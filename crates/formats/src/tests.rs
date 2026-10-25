@@ -214,6 +214,20 @@ fn markdown_round_trip() {
     check_round_trip("md", true);
 }
 
+/// A code line of backticks must not be mistaken for the closing fence when the file comes
+/// back: the writer's fence has to be one backtick longer than any content line.
+#[test]
+fn markdown_code_fence_outgrows_its_content() {
+    let line = "`".repeat(100);
+    let doc = import("md", format!("    {line}\n").as_bytes()).unwrap().unwrap();
+    assert_eq!(doc.plain_text(Default::default()).trim(), line);
+    let out = export("md", &doc).unwrap().unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&"`".repeat(101)), "the fence is longer than the content: {text}");
+    let back = import("md", text.as_bytes()).unwrap().unwrap();
+    assert_eq!(back.plain_text(Default::default()).trim(), line, "the code line survives a round trip");
+}
+
 #[test]
 fn html_round_trip() {
     check_round_trip("html", true);
@@ -222,6 +236,49 @@ fn html_round_trip() {
     let back = import("html", html.as_bytes()).unwrap().unwrap();
     assert_eq!(back.media.len(), 1, "picture survives");
     assert_eq!(back.core.title, "Sample Title");
+}
+
+#[test]
+fn html_ruby_round_trip() {
+    // #1681: a phonetic guide exports as `<ruby>` and opens back as one ruby object, its base
+    // text still in the paragraph.
+    let props = CharProps::default();
+    let mut p = Paragraph::with_text("I read ", props.clone());
+    let n = p.len();
+    p.insert_object(n, model::ruby_object("漢字".into(), "かんじ".into(), 20.0), &props).unwrap();
+    let n = p.len();
+    p.insert_text(n, " daily.", &props).unwrap();
+    let mut d = Document::new();
+    d.body = vec![para_block(p)];
+
+    let html = String::from_utf8(export("html", &d).unwrap().unwrap()).unwrap();
+    assert!(html.contains("<ruby>漢字<rt>かんじ</rt></ruby>"), "{html}");
+    let back = import("html", html.as_bytes()).unwrap().unwrap();
+    assert_eq!(back.plain_text(Default::default()), "I read 漢字 daily.");
+    let ruby = back.body.iter().find_map(|b| match &**b {
+        Block::Para(p) => p.objects.iter().find_map(|o| match o {
+            InlineObject::Ruby { base, ruby, .. } => Some((base.as_str(), ruby.as_str())),
+            _ => None,
+        }),
+        _ => None,
+    });
+    assert_eq!(ruby, Some(("漢字", "かんじ")));
+}
+
+#[test]
+fn html_ruby_at_the_paragraph_start_keeps_a_leading_space() {
+    // #1681: the ruby's base text goes through the text escaper with the paragraph-start state
+    // taken before its formatting tags, so a leading space becomes `&nbsp;` instead of a space
+    // HTML may collapse.
+    let props = CharProps { bold: Some(true), ..Default::default() };
+    let mut p = Paragraph::with_text("", CharProps::default());
+    let n = p.len();
+    p.insert_object(n, model::ruby_object(" 漢字".into(), "かんじ".into(), 20.0), &props).unwrap();
+    let mut d = Document::new();
+    d.body = vec![para_block(p)];
+
+    let html = String::from_utf8(export("html", &d).unwrap().unwrap()).unwrap();
+    assert!(html.contains("<strong><ruby>&nbsp;漢字<rt>かんじ</rt></ruby></strong>"), "{html}");
 }
 
 #[test]
@@ -301,6 +358,21 @@ fn txt_export_writes_symbol_font_text_as_unicode() {
     d.format_range(&wordcraft_doc::Pos::body(0, 5), &wordcraft_doc::Pos::body(0, 9), &|c| c.font = Some("Wingdings".into())).unwrap();
     let out = export("txt", &d).unwrap().unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "Done \u{263A}\u{2713}");
+}
+
+/// #1080: `txt` export (and so `wordcraft-cli text`) keeps list labels, so a list item reads
+/// apart from an ordinary paragraph.
+#[test]
+fn txt_export_keeps_list_labels() {
+    let mut d = Document::new();
+    let bul = d.numbering.add_list(wordcraft_doc::ListKind::Bullet);
+    let mut p = Paragraph::with_text("alpha", CharProps::default());
+    p.props.numbering = Some(wordcraft_doc::props::NumRef { num: bul, level: 0 });
+    d.body = vec![para_block(p), para_block(Paragraph::with_text("plain", CharProps::default()))];
+    let out = String::from_utf8(export("txt", &d).unwrap().unwrap()).unwrap();
+    let mut lines = out.split("\r\n");
+    assert!(lines.next().is_some_and(|l| l.contains("alpha") && !l.starts_with("alpha")), "{out:?}");
+    assert_eq!(lines.next(), Some("plain"));
 }
 
 /// #569: a file with an extension we don't know opens as text when it is text (a playlist), and
@@ -513,6 +585,12 @@ fn hostile_rtf_bits() {
     ] {
         let _ = import("rtf", s).unwrap();
     }
+    // #1653: a flood of multibyte code-page bytes (leads and trails, raw and escaped) decodes as a
+    // stream and never panics or grows a buffer with the input.
+    let mut rtf = b"{\\rtf1\\ansi\\ansicpg932 ".to_vec();
+    rtf.resize(rtf.len() + 200_000, 0x93);
+    rtf.extend_from_slice(b"\\'fa\\par\\'93");
+    assert!(import("rtf", &rtf).unwrap().is_ok());
 }
 
 proptest::proptest! {
@@ -598,6 +676,31 @@ fn chart_alt_text_is_an_image_alt_never_body_text() {
     assert_eq!(para_texts(&d), ["See below"]);
 }
 
+/// A picture marked decorative exports with an empty alt text, though it keeps its description,
+/// so screen readers skip it; the same picture not marked decorative keeps its alt text.
+#[test]
+fn decorative_picture_exports_with_empty_alt_text() {
+    use wordcraft_doc::para::{AltText, Float};
+    let doc = |decorative: bool| {
+        let mut d = Document::new();
+        let media = d.add_media(png(), "png");
+        let float = Float { alt: AltText { decorative, ..Default::default() }, ..Default::default() };
+        let pic = InlineObject::Image { media, w: 40.0, h: 20.0, alt: "Blue bar".into(), float, crop: [0.0; 4], ole: None };
+        let mut p = Paragraph::with_text("Logo: ", CharProps::default());
+        let n = p.len();
+        p.insert_object(n, pic, &CharProps::default()).unwrap();
+        d.body = vec![para_block(p)];
+        d
+    };
+    let text = |d: &Document, ext: &str| String::from_utf8(export(ext, d).unwrap().unwrap()).unwrap();
+    let (plain, decorative) = (doc(false), doc(true));
+    assert!(text(&plain, "html").contains(r#"alt="Blue bar""#), "{}", text(&plain, "html"));
+    assert!(text(&plain, "md").contains("![Blue bar]("), "{}", text(&plain, "md"));
+    let (html, md) = (text(&decorative, "html"), text(&decorative, "md"));
+    assert!(html.contains(r#"alt="""#) && !html.contains("Blue bar"), "{html}");
+    assert!(md.contains("![](") && !md.contains("Blue bar"), "{md}");
+}
+
 /// Hostile Markdown and HTML that rescanned the rest of the text from every `[`, `![`, `<` or `&`
 /// took quadratic time: a few hundred KB froze the importer for tens of seconds.
 #[test]
@@ -653,6 +756,29 @@ fn code_spans_and_links_around_backticks_read_as_before() {
     assert_eq!(linked("http://a.org"), "x ] y");
     assert_eq!(linked("http://b.org"), "p ` q");
     assert_eq!(p.text(), "`e a ` b then ``` and c x ] y p ` q ``f");
+}
+
+/// An unescaped `&` in a LaTeX link address is part of the address.
+#[test]
+fn latex_href_keeps_ampersand() {
+    let d = import("tex", br"\href{https://e.com/a?b=1&c=2}{link}").unwrap().unwrap();
+    let links: Vec<Option<String>> = flat(&d)
+        .iter()
+        .filter_map(|b| if let FBlock::Para(p) = b { Some(p) } else { None })
+        .flat_map(|p| p.inlines.iter())
+        .filter_map(|i| if let model::Inline::Text(_, f) = i { Some(f.link.clone()) } else { None })
+        .collect();
+    assert_eq!(links, [Some("https://e.com/a?b=1&c=2".to_string())]);
+
+    let d = import("tex", br"\url{https://e.com/a?b=1&c=2}").unwrap().unwrap();
+    let texts: Vec<(String, Option<String>)> = flat(&d)
+        .iter()
+        .filter_map(|b| if let FBlock::Para(p) = b { Some(p) } else { None })
+        .flat_map(|p| p.inlines.iter())
+        .filter_map(|i| if let model::Inline::Text(t, f) = i { Some((t.to_string(), f.link.clone())) } else { None })
+        .collect();
+    let url = "https://e.com/a?b=1&c=2".to_string();
+    assert_eq!(texts, [(url.clone(), Some(url))]);
 }
 
 /// A `[` nothing closes, bracketed text that is not a link and links themselves used up the bracket

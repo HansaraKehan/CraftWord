@@ -59,6 +59,8 @@ pub struct ExportOptions {
     /// An `.xml` copy is a Word 2003 XML Document (WordprocessingML 2003) instead of a Word XML
     /// Document (Flat OPC): `format: "wordml2003"` on the save commands.
     pub word2003: bool,
+    /// How digits look in PDFs and page images (the Numeral setting, `System` resolved).
+    pub numeral: wordcraft_layout::NumeralMode,
 }
 
 /// A document password: wiped from memory when dropped, never printed (`Debug` shows `***`).
@@ -398,12 +400,7 @@ pub fn open_path_with(path: &std::path::Path, password: Option<&str>) -> Result<
 /// [`open_path_with`] in `region` (see [`open_bytes_in`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path_in(path: &std::path::Path, password: Option<&str>, region: &wordcraft_geom::Region) -> Result<(Document, bool), String> {
-    crate::file_access::check_read(&path.to_string_lossy())?;
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if meta.len() > 2 << 30 {
-        return Err(format!("{}: file is larger than 2 GB", path.display()));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = read_document(path)?;
     let name = path.to_string_lossy();
     if matches!(ext_of(&name).as_str(), "html" | "htm" | "xhtml") {
         // Pictures referenced by a relative path load from beside the HTML file.
@@ -415,6 +412,32 @@ pub fn open_path_in(path: &std::path::Path, password: Option<&str>, region: &wor
         return Ok((doc, false));
     }
     open_bytes_in(&name, &bytes, password, region)
+}
+
+/// Largest document file opened by path.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_DOCUMENT: u64 = 2 << 30;
+
+/// The bytes of the document at `path`, read as `file.open` reads a path: inside the automation
+/// read root, and only a regular file of at most 2 GB. A named pipe would block the open and a
+/// device such as `/dev/zero` would never end ([`read_regular_file`]). Public for the app, which
+/// opens a file whose name isn't valid Unicode through `file.open`'s `data` (#1440).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_document(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    crate::file_access::check_read(&path.to_string_lossy())?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{}: not a file", path.display()));
+    }
+    if meta.len() > MAX_DOCUMENT {
+        return Err(format!("{}: file is larger than 2 GB", path.display()));
+    }
+    // Checked again on the opened file, which may not be the one just looked at.
+    match read_regular_file(path, MAX_DOCUMENT) {
+        Some(bytes) if bytes.len() as u64 <= MAX_DOCUMENT => Ok(bytes),
+        Some(_) => Err(format!("{}: file is larger than 2 GB", path.display())),
+        None => Err(format!("{}: could not be read as a file", path.display())),
+    }
 }
 
 /// The pictures an HTML file names by a path relative to its folder.
@@ -521,12 +544,17 @@ fn read_regular_file(path: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Largest file [`read_file`] reads whole — the same 2 GB ceiling [`open_path_with`] gives a
+/// document.
+pub const MAX_READ_FILE: u64 = 2 << 30;
+
 /// The bytes of the file at `path`, for commands that take a path (pictures, mail-merge data).
 /// Every such read goes through here so the automation read root applies ([`crate::file_access`]).
+/// Only a regular file is read, and at most [`MAX_READ_FILE`] bytes of it: a named pipe blocks
+/// when opened and a device like `/dev/zero` never reaches end of file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
-    crate::file_access::check_read(path)?;
-    std::fs::read(path).map_err(|e| format!("{path}: {e}"))
+    read_file_capped(path, MAX_READ_FILE, "file")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -559,6 +587,59 @@ pub fn read_file_head(path: &str, max: u64) -> Result<Vec<u8>, String> {
     let mut head = Vec::new();
     f.take(max).read_to_end(&mut head).map_err(|e| format!("{path}: {e}"))?;
     Ok(head)
+}
+
+/// An entry of [`list_dir`]: a file or folder (links followed).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub dir: bool,
+    /// The file's size in bytes (0 for a folder).
+    pub len: u64,
+    /// When it last changed, in seconds since the Unix epoch, if the system says.
+    pub modified: Option<u64>,
+}
+
+/// The files and folders in the folder at `path`, inside the automation read root (entries
+/// leading outside it, and ones that can't be read, are left out); at most `max` entries are
+/// looked at, and `true` says the listing was cut short there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_dir(path: &std::path::Path, max: usize) -> Result<(Vec<DirEntry>, bool), String> {
+    crate::file_access::check_read(&path.to_string_lossy())?;
+    let read = std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for (seen, entry) in read.enumerate() {
+        if seen >= max {
+            return Ok((out, true));
+        }
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if crate::file_access::check_read(&path.to_string_lossy()).is_err() {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_dir() && !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        let name = entry.file_name().to_string_lossy().into_owned();
+        out.push(DirEntry { name, path, dir: meta.is_dir(), len: if meta.is_file() { meta.len() } else { 0 }, modified });
+    }
+    Ok((out, false))
+}
+
+/// The title in the core properties of the Word package at `path` (a file of at most `max_file`
+/// bytes; at most `max_part` bytes of the part are read), inside the automation read root.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn package_title(path: &std::path::Path, max_file: u64, max_part: u64) -> Option<String> {
+    crate::file_access::check_read(&path.to_string_lossy()).ok()?;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > max_file {
+        return None;
+    }
+    wordcraft_docx::package_title(std::io::BufReader::new(file), max_part)
 }
 
 /// Rename without replacing another file, respecting both automation access roots.

@@ -357,7 +357,7 @@ pub fn table_style_preview(ui: &mut Ui, style: Option<&TableStyleProps>, look: T
     let (cw, rh) = (table.width() / COLS as f32, table.height() / ROWS as f32);
     let rgb = |c: Rgb| egui::Color32::from_rgb(c.0, c.1, c.2);
     let tb = st.parts.borders.unwrap_or_default();
-    let band = st.parts.band_size.unwrap_or(1);
+    let band = (st.parts.band_size.unwrap_or(0), st.parts.col_band_size.unwrap_or(0));
     for (ri, row) in TEXT.iter().enumerate() {
         for (ci, txt) in row.iter().enumerate() {
             // Sample words in the interface language; numbers as they are.

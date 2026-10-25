@@ -43,6 +43,13 @@ pub struct Row {
     pub controls: ControlWrap,
 }
 
+impl Row {
+    /// Grid column where the row's first cell starts: the columns `w:gridBefore` skips.
+    pub fn first_grid(&self) -> usize {
+        (self.props.grid_before as usize).min(MAX_COLS)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Table {
     #[serde(default)]
@@ -58,6 +65,10 @@ pub struct Table {
 /// Hard limits that keep hostile input from exhausting memory.
 pub const MAX_ROWS: usize = 32_767;
 pub const MAX_COLS: usize = 63;
+/// Most tables nested one inside another: the depth the DOCX reader and writer keep. Pasting
+/// and inserting stop there too, so no edit builds a document deep enough to overflow the stack
+/// when it is saved, copied or dropped (#1596).
+pub const MAX_TABLE_DEPTH: usize = 24;
 
 impl Table {
     /// A `rows × cols` table spanning `width` points, "Table Grid" style.
@@ -86,18 +97,22 @@ impl Table {
     }
 
     pub fn cols(&self) -> usize {
-        self.grid.len().max(self.rows.iter().map(|r| r.cells.iter().map(Cell::span).sum::<usize>()).max().unwrap_or(0))
+        let row_cols = |r: &Row| r.first_grid() + r.cells.iter().map(Cell::span).sum::<usize>() + r.props.grid_after as usize;
+        self.grid.len().max(self.rows.iter().map(row_cols).max().unwrap_or(0))
     }
 
     /// Grid column where cell `c` of row `r` starts.
     pub fn grid_col(&self, r: usize, c: usize) -> usize {
-        self.rows.get(r).map(|row| row.cells.iter().take(c).map(Cell::span).sum()).unwrap_or(0)
+        self.rows.get(r).map(|row| row.first_grid() + row.cells.iter().take(c).map(Cell::span).sum::<usize>()).unwrap_or(0)
     }
 
     /// Cell index in row `r` that covers grid column `g`.
     pub fn cell_at_grid(&self, r: usize, g: usize) -> Option<usize> {
         let row = self.rows.get(r)?;
-        let mut x = 0;
+        let mut x = row.first_grid();
+        if g < x {
+            return None;
+        }
         for (i, c) in row.cells.iter().enumerate() {
             if g < x + c.span() {
                 return Some(i);
@@ -178,7 +193,8 @@ impl Table {
                 match idx {
                     Some((i, true)) => {
                         if let Some(c) = row.cells.get_mut(i) {
-                            c.props.span += 1;
+                            // From the clamped span: a `.json` file can carry any `u32` (#3637).
+                            c.props.span = (c.span() + 1).min(MAX_COLS) as u32;
                         }
                     }
                     Some((i, false)) => {
@@ -208,7 +224,7 @@ impl Table {
             for (i, c) in row.cells.iter_mut().enumerate() {
                 if g < x + c.span() {
                     if c.span() > 1 {
-                        c.props.span -= 1;
+                        c.props.span = (c.span() - 1) as u32;
                     } else {
                         rm = Some(i);
                     }
@@ -232,7 +248,7 @@ impl Table {
         let removed: Vec<Cell> = row.cells.drain(c0 + 1..=c1).collect();
         if let Some(first) = row.cells.get_mut(c0) {
             for c in removed {
-                first.props.span += c.props.span.max(1);
+                first.props.span = (first.span() + c.span()).min(MAX_COLS) as u32;
                 let nonempty: Vec<_> = c.blocks.into_iter().filter(|b| b.as_para().is_none_or(|p| !p.is_empty())).collect();
                 first.blocks.extend(nonempty);
             }
@@ -496,6 +512,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grid_before_shifts_the_row() {
+        let mut t = Table::new(2, 3, 300.0);
+        t.rows[1].cells.remove(0);
+        t.rows[1].props.grid_before = 1;
+        assert_eq!(t.grid_col(1, 0), 1);
+        assert_eq!(t.grid_col(1, 1), 2);
+        assert_eq!(t.cell_at_grid(1, 0), None);
+        assert_eq!(t.cell_at_grid(1, 2), Some(1));
+        assert_eq!(t.cols(), 3);
+    }
+
+    #[test]
     fn new_table_shape() {
         let t = Table::new(3, 4, 468.0);
         assert_eq!(t.rows.len(), 3);
@@ -520,6 +548,32 @@ mod tests {
         assert_eq!(t.rows.len(), 2);
         t.delete_row(99);
         t.delete_col(99);
+    }
+
+    /// #3637: a `.json` file can give a cell any span; inserting a column through it, merging it
+    /// or deleting a column under it doesn't overflow, and the span it gets is in 1..=MAX_COLS.
+    #[test]
+    fn a_huge_span_from_a_file_does_not_overflow() {
+        let huge = || {
+            let mut t = Table::new(1, 2, 200.0);
+            t.rows[0].cells[0].props.span = u32::MAX;
+            t
+        };
+        // Column 1 is inside the spanning cell, so the cell widens.
+        let mut t = huge();
+        t.insert_col(1);
+        assert_eq!(t.rows[0].cells[0].props.span, MAX_COLS as u32);
+        let mut t = huge();
+        t.merge_right(0, 0, 1);
+        assert_eq!(t.rows[0].cells.len(), 1);
+        assert_eq!(t.rows[0].cells[0].props.span, MAX_COLS as u32);
+        let mut t = huge();
+        t.rows[0].cells[1].props.span = u32::MAX;
+        t.merge_right(0, 0, 1);
+        assert_eq!(t.rows[0].cells[0].props.span, MAX_COLS as u32);
+        let mut t = huge();
+        t.delete_col(0);
+        assert_eq!(t.rows[0].cells[0].props.span, MAX_COLS as u32 - 1);
     }
 
     #[test]

@@ -77,7 +77,7 @@ impl eframe::App for App {
             {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.0.quit_requested = false;
-                schedule_macos_terminate(&self.0, self.2.as_ref());
+                schedule_macos_terminate(&mut self.0, self.2.as_ref());
             }
             #[cfg(not(target_os = "macos"))]
             if self.0.quit_requested {
@@ -94,6 +94,7 @@ impl eframe::App for App {
     }
     fn on_exit(&mut self) {
         print::finish_pending_jobs();
+        self.0.session.finish_recovery();
         save_prefs(&self.0);
         if let Some(key_file) = &self.2 {
             key_file.remove();
@@ -109,7 +110,7 @@ impl eframe::App for App {
 /// removed first, as `on_exit` does, because a fallback [`std::process::exit`]
 /// skips `on_exit`. A second close while a quit is already scheduled is ignored.
 #[cfg(target_os = "macos")]
-fn schedule_macos_terminate(app: &WordApp, key_file: Option<&control_server::KeyFile>) {
+fn schedule_macos_terminate(app: &mut WordApp, key_file: Option<&control_server::KeyFile>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     if app.printing.busy() {
         return;
@@ -121,6 +122,7 @@ fn schedule_macos_terminate(app: &WordApp, key_file: Option<&control_server::Key
     log::info!("window close: quitting");
     // This path can bypass on_exit. Join the owned workers before termination and cleanup.
     print::finish_pending_jobs();
+    app.session.finish_recovery();
     save_prefs(app);
     if let Some(key_file) = key_file {
         key_file.remove();
@@ -244,6 +246,8 @@ fn services(file_dialog: file_dialogs::Hook, ctx: &egui::Context) -> Services {
         print_native: Some(print::submit()),
         clipboard_picture: Some(Box::new(clipboard::picture)),
         make_default_app: default_apps::hook(),
+        // Personal templates live in `Templates` in the settings folder (#2852), made on first save.
+        templates_dir: wordcraft_control_key::settings_dir().map(|d| d.join("Templates")),
         animations_enabled: Some(animations::hook(ctx)),
         clipboard_text: Some(Box::new(clipboard::text)),
         clipboard_html: Some(Box::new(clipboard::html)),
@@ -303,10 +307,10 @@ fn text_args() -> (Vec<String>, Vec<std::path::PathBuf>) {
 
 /// Open a file whose name isn't valid Unicode (#1440). `file.open` takes its path as text, so it
 /// gets the file's bytes under the lossy name, and the document then keeps the real path to save to.
+/// The bytes are read as `file.open` reads a path: only a regular file, and at most 2 GB.
 fn open_non_unicode(app: &mut WordApp, path: &std::path::Path) {
     let name = path.to_string_lossy();
-    let opened = std::fs::read(path)
-        .map_err(|e| e.to_string())
+    let opened = wordcraft_engine::io::read_document(path)
         .and_then(|bytes| app.run("file.open", serde_json::json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)})));
     match opened {
         // Not when it waits for a password: that open names the document itself.
@@ -511,6 +515,40 @@ mod tests {
         // A file that can't be read is a warning, as one that fails to open by name is.
         open_non_unicode(&mut app, &dir.join(std::ffi::OsString::from_vec(b"gon\xe9.txt".to_vec())));
         assert_eq!(app.session.path.as_deref(), Some(path.as_path()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A named pipe or a device under such a name is a warning, not a read: the pipe blocked
+    /// start-up until something wrote to it, and `/dev/zero` read until memory ran out.
+    #[test]
+    fn a_pipe_or_device_whose_name_isnt_unicode_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("wc-app-non-utf8-dev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join(std::ffi::OsString::from_vec(b"fif\xe9.txt".to_vec()));
+        if !std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!("mkfifo unavailable; skipping");
+            return;
+        }
+        let zero = dir.join(std::ffi::OsString::from_vec(b"z\xe9ro.txt".to_vec()));
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        // If the open blocks on the pipe, a writer comes after 10 s, so the test fails rather than hangs.
+        let unblock = fifo.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let _ = std::fs::OpenOptions::new().write(true).open(unblock);
+        });
+
+        let mut app = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        app.run("text.insert", serde_json::json!({"text": "kept"})).unwrap();
+        for p in [&fifo, &zero] {
+            let started = std::time::Instant::now();
+            open_non_unicode(&mut app, p);
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "{p:?} took {:?}", started.elapsed());
+            assert_eq!(app.session.path, None, "{p:?}");
+            assert!(app.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("kept"), "{p:?}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

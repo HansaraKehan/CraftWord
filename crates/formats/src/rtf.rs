@@ -10,13 +10,17 @@
 //! Import: a tolerant reader for groups and destinations (unknown `\*` destinations, headers,
 //! footers, notes and objects are skipped), `\par \line \tab \page`, `\uN` with `\ucN`
 //! fallback skipping, `\'hh` and 8-bit text in the document's code page (`\ansicpg`, `\mac`, `\pc`, `\pca`) or
-//! the current font's (`\fcharset`, `\cpg`: Cyrillic, Central European, Greek, Mac OS Roman…;
-//! Windows-1252 when none is named), the formatting words above, stylesheet-based
+//! the current font's (`\fcharset`, `\cpg`: Cyrillic, Central European, Greek, Mac OS Roman, the
+//! East Asian multibyte pages 932/936/949/950…; Windows-1252 when none is named). A multibyte
+//! code page's bytes stream through one decoder, so a lead byte and its trail byte decode
+//! together and a run that looks like a UTF-8 BOM is not mistaken for one; the formatting words
+//! above, stylesheet-based
 //! headings and `\outlinelevel`, lists through `\ls`/`\ilvl`, fields, bookmarks, pictures and
 //! tables. Group nesting and picture sizes are capped.
 
 use std::collections::HashMap;
 
+use wordcraft_doc::props::VAlign;
 use wordcraft_doc::{Align, Document, Rgb};
 
 use crate::model::{self, Cell, FBlock, FTable, Flow, Fmt, Inline, Kind, ListInfo, Meta, Para, RevMark, make_img};
@@ -27,6 +31,12 @@ const MAX_GROUPS: usize = 512;
 const MAX_PICT: usize = 64 << 20;
 /// Most sections we read (`\sect`); later breaks end paragraphs only.
 const MAX_SECTIONS: usize = 10_000;
+/// The encoding of an East Asian multibyte code page (932 Shift-JIS, 936 GBK, 949 UHC, 950 Big5),
+/// which [`Reader::finish_multibyte`] decodes a run with; `None` for the single-byte code pages.
+fn multibyte_encoding(code_page: u16) -> Option<&'static encoding_rs::Encoding> {
+    let label = wordcraft_doc::encoding::multibyte_encoding_name(code_page)?;
+    encoding_rs::Encoding::for_label(label.as_bytes())
+}
 
 // ---------------------------------------------------------------------------------------------
 // Export
@@ -42,6 +52,7 @@ pub fn esc(s: &str) -> String {
             '\t' => o.push_str("\\tab "),
             '\n' => o.push_str("\\line "),
             '\u{000C}' => o.push_str("\\page "),
+            '\u{000E}' => o.push_str("\\column "),
             '\u{00A0}' => o.push_str("\\~"),
             '\u{00AD}' => o.push_str("\\-"),
             '\u{2011}' => o.push_str("\\_"),
@@ -403,6 +414,8 @@ impl Writer {
                     let a = esc(a);
                     out.push_str(&format!("{{\\*\\bkmkstart {a}}}{{\\*\\bkmkend {a}}}"));
                 }
+                // RTF keeps no ruby yet: its base text, in the run's formatting.
+                Inline::Ruby { base, fmt, .. } => self.run(base, fmt, out),
                 Inline::Figure(_) | Inline::Equation { .. } => {}
             }
         }
@@ -468,7 +481,8 @@ impl Writer {
         match p.align {
             Some(Align::Center) => out.push_str("\\qc"),
             Some(Align::Right) => out.push_str("\\qr"),
-            Some(Align::Justify) | Some(Align::Distribute) => out.push_str("\\qj"),
+            Some(Align::Justify) => out.push_str("\\qj"),
+            Some(Align::Distribute) => out.push_str("\\qd"),
             _ => out.push_str("\\ql"),
         }
         if p.page_break {
@@ -597,6 +611,12 @@ impl Writer {
                     out.push_str("\\clvmrg");
                 } else if c.rowspan > 1 {
                     out.push_str("\\clvmgf");
+                }
+                match c.valign {
+                    Some(VAlign::Top) => out.push_str("\\clvertalt"),
+                    Some(VAlign::Center) => out.push_str("\\clvertalc"),
+                    Some(VAlign::Bottom) => out.push_str("\\clvertalb"),
+                    None => {}
                 }
                 self.cell_borders(c.borders.as_ref(), t.borderless, out);
                 if let Some(s) = c.shading {
@@ -974,6 +994,7 @@ struct CellDef {
     /// The borders the cell names (`\clbrdrt` … `\clbrdrr`, each with its line style, `\brdrw`
     /// width and `\brdrcf` colour).
     borders: wordcraft_doc::props::Borders,
+    valign: Option<VAlign>,
 }
 
 /// Page size and margins in twips (`\paperw`, `\margl`… and their `…sxn` section forms).
@@ -1144,6 +1165,11 @@ struct Reader {
     rev_name: String,
     skip_chars: usize,
     pending_high: Option<u16>,
+    /// A streaming decoder for the current multibyte code page, and the code page it was made for.
+    /// A lead byte and its trail byte decode together even when a text word, a group boundary or the
+    /// end of a chunk falls between them, so a run of any length never splits a character.
+    mb_decoder: Option<encoding_rs::Decoder>,
+    mb_cp: u16,
     // Output.
     body: Vec<FBlock>,
     para: Para,
@@ -1291,6 +1317,8 @@ impl Reader {
     }
 
     fn close(&mut self) {
+        // A group end decodes the multibyte bytes read in it, before the state is restored.
+        self.finish_multibyte();
         self.skip_chars = 0;
         if self.overflow > 0 {
             self.overflow -= 1;
@@ -1378,11 +1406,126 @@ impl Reader {
         }
     }
 
-    /// A byte of 8-bit text (`\'hh` or raw) as a char, in the current font's code page, else the
-    /// default font's, else the document's.
-    fn byte_char(&self, b: u8) -> char {
-        let cp = self.st.cp.or_else(|| self.font_cps.get(&self.deff).copied()).unwrap_or(if self.ansicpg == 0 { 1252 } else { self.ansicpg });
-        wordcraft_doc::encoding::code_page_byte(cp, b)
+    /// The code page 8-bit text is read in: the current font's, else the default font's, else the
+    /// document's (Windows-1252 when none is named).
+    fn code_page(&self) -> u16 {
+        self.st.cp.or_else(|| self.font_cps.get(&self.deff).copied()).unwrap_or(if self.ansicpg == 0 { 1252 } else { self.ansicpg })
+    }
+
+    /// A byte of 8-bit text (`\'hh` or raw): a single-byte code page decodes it at once; a
+    /// multibyte one is fed to a streaming decoder ([`Reader::finish_multibyte`]), so a lead byte decodes
+    /// together with its trail byte.
+    fn byte(&mut self, b: u8) {
+        if self.skip_chars > 0 {
+            self.skip_chars -= 1;
+            return;
+        }
+        let cp = self.code_page();
+        let Some(encoding) = multibyte_encoding(cp) else {
+            self.finish_multibyte();
+            let c = wordcraft_doc::encoding::code_page_byte(cp, b);
+            self.ch(c);
+            return;
+        };
+        // A code page switch ends the previous run (a lead byte left then becomes U+FFFD, as Word
+        // writes it) before the new decoder starts.
+        if self.mb_cp != cp || self.mb_decoder.is_none() {
+            self.finish_multibyte();
+            self.mb_cp = cp;
+            self.mb_decoder = Some(encoding.new_decoder_without_bom_handling());
+        }
+        self.decode_run(&[b]);
+    }
+
+    /// Feed 8-bit text bytes to the open multibyte decoder and append what it emits. A single
+    /// `\'hh` byte decodes into a stack buffer (no heap allocation per byte of escaped text); a
+    /// raw run decodes in one call, so a long ASCII run in a Japanese, Chinese or Korean document
+    /// costs one append instead of one per byte. The destination's spare capacity is all
+    /// `decode_to_*` writes into, so a full buffer is drained and decoding continues.
+    fn decode_run(&mut self, bytes: &[u8]) {
+        // The decoder is taken out so the text it produced can be appended (which borrows the
+        // reader) before it goes back.
+        let Some(mut decoder) = self.mb_decoder.take() else { return };
+        let mut read = 0;
+        if bytes.len() <= 16 {
+            // A character is at most 4 UTF-8 bytes, and a byte may also replace a pending lead
+            // byte (3 more), so one escaped byte always fits the stack buffer.
+            let mut buf = [0u8; 16];
+            let (result, got, written, _) = decoder.decode_to_utf8(bytes, &mut buf, false);
+            read = got;
+            let full = matches!(result, encoding_rs::CoderResult::OutputFull);
+            if written > 0
+                && let Ok(s) = std::str::from_utf8(&buf[..written])
+            {
+                self.text(s);
+            }
+            if !full {
+                self.mb_decoder = Some(decoder);
+                return;
+            }
+        }
+        let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+        let mut rest = bytes.get(read..).unwrap_or_default();
+        loop {
+            let (result, got, _) = decoder.decode_to_string(rest, &mut out, false);
+            rest = rest.get(got..).unwrap_or_default();
+            if !matches!(result, encoding_rs::CoderResult::OutputFull) {
+                break;
+            }
+            out.reserve(16.max(rest.len().saturating_mul(2)));
+        }
+        self.mb_decoder = Some(decoder);
+        if !out.is_empty() {
+            self.text(&out);
+        }
+    }
+
+    /// A run of raw 8-bit text from the file (not `\'hh` escapes): a single-byte code page maps
+    /// each byte to a char; a multibyte one decodes the whole run in one pass, so a long ASCII run
+    /// in a Japanese, Chinese or Korean document costs one decode and one append instead of one
+    /// per byte.
+    ///
+    /// The decoder is created without BOM handling: the code page comes from `\ansicpg`, `\cpg` or
+    /// `\fcharset` and must not change. With BOM sniffing, a run that starts `EF BB BF` in GBK,
+    /// Big5 or UHC (a valid character pair followed by a lead byte) would be dropped as a UTF-8
+    /// BOM and the rest decoded as UTF-8.
+    fn run(&mut self, chunk: &[u8]) {
+        if self.skip_chars > 0 {
+            for b in chunk {
+                self.byte(*b);
+            }
+            return;
+        }
+        let cp = self.code_page();
+        let Some(encoding) = multibyte_encoding(cp) else {
+            self.finish_multibyte();
+            let mut out = String::with_capacity(chunk.len());
+            for b in chunk {
+                out.push(wordcraft_doc::encoding::code_page_byte(cp, *b));
+            }
+            if !out.is_empty() {
+                self.text(&out);
+            }
+            return;
+        };
+        if self.mb_cp != cp || self.mb_decoder.is_none() {
+            self.finish_multibyte();
+            self.mb_cp = cp;
+            self.mb_decoder = Some(encoding.new_decoder_without_bom_handling());
+        }
+        self.decode_run(chunk);
+    }
+
+    /// Ends the current multibyte run: the streaming decoder emits whatever it still holds (a lone
+    /// lead byte becomes U+FFFD, as Word writes it) and is dropped. A code page switch, a single-byte
+    /// run, a group end and the end of the document finish the run this way.
+    fn finish_multibyte(&mut self) {
+        let Some(mut decoder) = self.mb_decoder.take() else { return };
+        let mut out = String::with_capacity(16);
+        let _ = decoder.decode_to_string(&[], &mut out, true);
+        if !out.is_empty() {
+            self.text(&out);
+        }
     }
 
     fn commit_style(&mut self) {
@@ -1571,6 +1714,7 @@ impl Reader {
             self.skip_chars -= 1;
             return;
         }
+        self.finish_multibyte();
         let mut buf = [0u8; 4];
         self.text(c.encode_utf8(&mut buf));
     }
@@ -1690,6 +1834,7 @@ impl Reader {
             c.shading = d.shading;
             c.borders = d.borders.any_visible().then_some(d.borders);
             c.header = self.row_header;
+            c.valign = d.valign;
             match d.vmerge {
                 1 => c.rowspan = 2,
                 2 => c.covered = true,
@@ -1728,6 +1873,9 @@ impl Reader {
     }
 
     fn word(&mut self, w: &str, p: Option<i32>, starred: bool, first_in_group: bool) {
+        // Every control word ends a multibyte run: the code page it is read in may change here
+        // (`\f`, `\fcharset`, `\cpg`, `\ansicpg`, `\pard`), and `\par` must see the text before it.
+        self.finish_multibyte();
         let on = p != Some(0);
         let pv = p.unwrap_or(0);
         if self.st.dest == Dest::Skip && !(self.in_info() && matches!(w, "title" | "author" | "subject" | "keywords" | "doccomm" | "creatim")) {
@@ -1850,9 +1998,9 @@ impl Reader {
                         self.font_cp_cur = None;
                     }
                     "fcharset" => self.font_cp_cur = wordcraft_doc::encoding::charset_code_page(pv),
-                    // A font's explicit code page (`\cpg1251`) wins over its charset.
+                    // A font's explicit code page (`\cpg1251`, `\cpg932`) wins over its charset.
                     "cpg" => {
-                        if let Some(cp) = u16::try_from(pv).ok().filter(|cp| wordcraft_doc::encoding::is_byte_code_page(*cp)) {
+                        if let Some(cp) = u16::try_from(pv).ok().filter(|cp| wordcraft_doc::encoding::is_text_code_page(*cp)) {
                             self.font_cp_cur = Some(cp);
                         }
                     }
@@ -1983,6 +2131,7 @@ impl Reader {
             "line" => self.ch('\n'),
             "tab" => self.ch('\t'),
             "page" => self.ch('\u{000C}'),
+            "column" => self.ch('\u{000E}'),
             "emdash" => self.ch('—'),
             "endash" => self.ch('–'),
             "bullet" => self.ch('•'),
@@ -2001,7 +2150,7 @@ impl Reader {
                     self.pending_high = Some(u);
                 } else {
                     let c = match self.pending_high.take() {
-                        Some(h) if (0xDC00..0xE000).contains(&u) => char::decode_utf16([h, u]).next().and_then(|r| r.ok()).unwrap_or('\u{FFFD}'),
+                        Some(h) if (0xDC00..0xE000).contains(&u) => char::decode_utf16([h, u]).next().and_then(Result::ok).unwrap_or('\u{FFFD}'),
                         _ => char::from_u32(u32::from(u)).unwrap_or('\u{FFFD}'),
                     };
                     self.ch(c);
@@ -2054,7 +2203,7 @@ impl Reader {
             }
             "fs" => self.st.fmt.size = if pv > 0 { Some((pv as f32 / 2.0).clamp(1.0, 1638.0)) } else { None },
             "ansicpg" => {
-                if let Some(cp) = u16::try_from(pv).ok().filter(|cp| wordcraft_doc::encoding::is_byte_code_page(*cp)) {
+                if let Some(cp) = u16::try_from(pv).ok().filter(|cp| wordcraft_doc::encoding::is_text_code_page(*cp)) {
                     self.ansicpg = cp;
                 }
             }
@@ -2085,7 +2234,8 @@ impl Reader {
             "ql" => self.st.align = Some(Align::Left),
             "qc" => self.st.align = Some(Align::Center),
             "qr" => self.st.align = Some(Align::Right),
-            "qj" | "qd" => self.st.align = Some(Align::Justify),
+            "qj" => self.st.align = Some(Align::Justify),
+            "qd" => self.st.align = Some(Align::Distribute),
             "s" => self.st.style = pv,
             "outlinelevel" => self.st.outline = Some(pv.clamp(0, 9) as u8),
             "pagebb" => self.st.pagebb = on,
@@ -2108,6 +2258,9 @@ impl Reader {
             "clvmrg" => self.def_cur.vmerge = 2,
             "clmgf" => self.def_cur.hmerge = 1,
             "clmrg" => self.def_cur.hmerge = 2,
+            "clvertalt" => self.def_cur.valign = Some(VAlign::Top),
+            "clvertalc" => self.def_cur.valign = Some(VAlign::Center),
+            "clvertalb" => self.def_cur.valign = Some(VAlign::Bottom),
             "clcbpat" => self.def_cur.shading = self.colors.get(pv.max(0) as usize).copied().flatten(),
             "sb" => self.st.sb = Some(pv),
             "sa" => self.st.sa = Some(pv),
@@ -2485,7 +2638,7 @@ fn parse_full(bytes: &[u8]) -> Result<Parsed, String> {
                 let Some(&n) = bytes.get(i + 1) else { break };
                 if n.is_ascii_alphabetic() {
                     let mut j = i + 1;
-                    while bytes.get(j).is_some_and(|b| b.is_ascii_alphabetic()) && j - i <= 32 {
+                    while bytes.get(j).is_some_and(u8::is_ascii_alphabetic) && j - i <= 32 {
                         j += 1;
                     }
                     let word = std::str::from_utf8(bytes.get(i + 1..j).unwrap_or(b"")).unwrap_or("");
@@ -2495,7 +2648,7 @@ fn parse_full(bytes: &[u8]) -> Result<Parsed, String> {
                         k += 1;
                     }
                     let d0 = k;
-                    while bytes.get(k).is_some_and(|b| b.is_ascii_digit()) && k - d0 < 10 {
+                    while bytes.get(k).is_some_and(u8::is_ascii_digit) && k - d0 < 10 {
                         k += 1;
                     }
                     let param = if k > d0 {
@@ -2555,10 +2708,14 @@ fn parse_full(bytes: &[u8]) -> Result<Parsed, String> {
                         match h {
                             Some(v) => {
                                 if r.st.dest == Dest::Pict {
-                                    r.text(&format!("{v:02x}"));
+                                    // Hex digits, two at a time, without a String per picture byte.
+                                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                                    let h = [HEX[usize::from(v >> 4)], HEX[usize::from(v & 0x0f)]];
+                                    if let Ok(s) = std::str::from_utf8(&h) {
+                                        r.text(s);
+                                    }
                                 } else {
-                                    let c = r.byte_char(v);
-                                    r.ch(c);
+                                    r.byte(v);
                                 }
                                 i += 4;
                             }
@@ -2602,22 +2759,27 @@ fn parse_full(bytes: &[u8]) -> Result<Parsed, String> {
                     j += 1;
                 }
                 let chunk = bytes.get(i..j).unwrap_or(b"");
-                if r.skip_chars == 0 && chunk.is_ascii() {
+                if r.st.dest == Dest::Pict && r.skip_chars == 0 && chunk.is_ascii() {
+                    // Picture hex is not text: it needs no decoder, so neither a pending lead byte
+                    // nor the code page's single-byte path applies to it.
+                    if let Ok(s) = std::str::from_utf8(chunk) {
+                        r.text(s);
+                    }
+                } else if r.skip_chars == 0 && chunk.is_ascii() && r.mb_decoder.is_none() {
+                    // Plain ASCII with no multibyte run open: append it as it is.
                     if let Ok(s) = std::str::from_utf8(chunk) {
                         r.text(s);
                     }
                 } else {
-                    for b in chunk {
-                        let c = r.byte_char(*b);
-                        r.ch(c);
-                    }
+                    r.run(chunk);
                 }
                 i = j;
                 first_in_group = false;
             }
         }
     }
-    // A header or footer left open by a truncated file ends here.
+    // A header or footer left open by a truncated file ends here, and so does a multibyte run.
+    r.finish_multibyte();
     r.end_header_footer();
     if r.para_has || !r.para.inlines.is_empty() {
         r.end_para(false);
@@ -3024,6 +3186,126 @@ mod tests {
         // A code page number out of range is ignored, not truncated to another one.
         let f = parse(br"{\rtf1\ansi\ansicpg65973 caf\'e9\par}").unwrap();
         assert_eq!(texts(&f), ["Normal:café"]);
+        // The OEM charset (255) is DOS code page 437, like 254.
+        let f = parse(br"{\rtf1\ansi\deff0{\fonttbl{\f0\fcharset255 Courier New;}}\f0 caf\'82\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:café"]);
+    }
+
+    /// #1653: the East Asian code pages (932 Shift-JIS, 936 GBK, 949 UHC, 950 Big5) decode their
+    /// bytes as a run, so a lead byte and its trail byte decode together, escaped or raw.
+    #[test]
+    fn east_asian_multibyte_code_pages() {
+        // Japanese `\ansicpg932` (CP932: 日 = 93 fa, 本 = 96 7b, 語 = 8c ea).
+        let f = parse(br"{\rtf1\ansi\ansicpg932 \'93\'fa\'96\'7b\'8c\'ea\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語"]);
+        // Raw 8-bit text (not `\'hh`), and raw bytes mixed with one escaped byte: RTF can't carry a
+        // raw `{`, `}` or `\`, so 本's trail byte 7b is written `\'7b` here.
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x8a\xbf\x8e\x9a\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:漢字"]);
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x93\xfa\x96\\'7b\x8c\xea\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語"]);
+        // A font names the code page with `\fcharset128` or with `\cpg932`, and `\f0` selects it.
+        let f = parse(br"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fcharset128 MS Mincho;}}\f0 \'93\'fa\'96\'7b\'8c\'ea\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語"]);
+        let f = parse(br"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\cpg932 MS Mincho;}}\f0 \'93\'fa\'96\'7b\'8c\'ea\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語"]);
+        // Raw 8-bit bytes in the font table (the font's name) decode in the document's code page.
+        let d = import(b"{\\rtf1\\ansi\\ansicpg932\\deff0{\\fonttbl{\\f0\\fcharset128 \x96\xbe\x92\xa9;}}\\f0 x\\par}").unwrap();
+        assert_eq!(d.styles.default_chr.font.as_deref(), Some("明朝"));
+        // Korean `\ansicpg949` (UHC: 한국어 = c7 d1 b1 b9 be ee).
+        let f = parse(br"{\rtf1\ansi\ansicpg949 \'c7\'d1\'b1\'b9\'be\'ee\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:한국어"]);
+        // Simplified Chinese `\ansicpg936` (GBK: 中文 = d6 d0 ce c4).
+        let f = parse(br"{\rtf1\ansi\ansicpg936 \'d6\'d0\'ce\'c4\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:中文"]);
+        // Traditional Chinese `\ansicpg950` (Big5: 中文 = a4 a4 a4 e5).
+        let f = parse(br"{\rtf1\ansi\ansicpg950 \'a4\'a4\'a4\'e5\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:中文"]);
+        // `\uN?` escapes still decode alongside multibyte text (`\u26412?` is 本, its `?` fallback
+        // skipped by `\uc1`).
+        let f = parse(br"{\rtf1\ansi\ansicpg932 \'93\'fa\u26412?\'8c\'ea x\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語 x"]);
+        // An invalid sequence decodes as U+FFFD, as Word writes it, and doesn't lose the rest.
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x93\\par after\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:\u{FFFD}", "Normal:after"]);
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x93\xfa\x93 x\x96\x8c\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日\u{FFFD} x膜"]);
+    }
+
+    /// The decoder never sniffs a BOM: the code page is named by `\ansicpg`, `\cpg` or `\fcharset`,
+    /// so a run that starts `EF BB BF` is a character pair and a lead byte, not a UTF-8 BOM (which
+    /// would switch the rest of the document to UTF-8 and garble it).
+    #[test]
+    fn a_bom_like_byte_triple_is_text_in_a_multibyte_code_page() {
+        // GBK EF BB = 锘, then BF B5 = 康; UHC EF BB = 癤, then BF C0 = 오; Big5 EF BB = 嚜, then
+        // BF 40 = 濃.
+        let f = parse(br"{\rtf1\ansi\ansicpg936 \'ef\'bb\'bf\'b5\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:锘康"]);
+        let f = parse(br"{\rtf1\ansi\ansicpg949 \'ef\'bb\'bf\'c0\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:癤오"]);
+        let f = parse(br"{\rtf1\ansi\ansicpg950 \'ef\'bb\'bf\'40\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:嚜濃"]);
+    }
+
+    /// A multibyte run longer than any fixed buffer keeps every character: the streaming decoder
+    /// holds a lead byte and its trail byte together across decode steps instead of cutting the
+    /// character at a buffer size (the review's finding on the byte-capped flush).
+    #[test]
+    fn a_long_multibyte_run_never_splits_a_character() {
+        let mut bytes = b"{\\rtf1\\ansi\\ansicpg932 ".to_vec();
+        bytes.push(b'A');
+        // 2048 × あ (CP932 82 a0) is 4096 bytes after the one ASCII byte: a fixed 4096-byte buffer
+        // would flush with the last あ's lead byte in one step and its trail byte in the next.
+        for _ in 0..2048 {
+            bytes.extend_from_slice(&[0x82, 0xA0]);
+        }
+        bytes.extend_from_slice(b"\\par}");
+        let f = parse(&bytes).unwrap();
+        let expected: String = std::iter::once('A').chain((0..2048).map(|_| 'あ')).collect();
+        assert_eq!(texts(&f), [format!("Normal:{expected}")]);
+    }
+
+    /// A lead byte with no trail byte at the end of the document becomes U+FFFD, as Word writes a
+    /// malformed sequence — the streaming decoder is finalised, not left holding it.
+    #[test]
+    fn an_incomplete_lead_byte_at_the_end_is_replacement() {
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x93}").unwrap();
+        assert_eq!(texts(&f), ["Normal:\u{FFFD}"]);
+    }
+
+    /// #1653: a code page switch (`\f`, `\fcharset`, `\cpg`, `\ansicpg`), a group end and the end
+    /// of the document decode the multibyte bytes read so far, before the new code page applies.
+    #[test]
+    fn multibyte_code_page_switches_flush_pending_bytes() {
+        // Japanese (932) → ASCII → Cyrillic (`\fcharset204` with `\cpg1251`): each run decodes in
+        // its own code page, the last bytes before the switch included.
+        let f = parse(
+            br"{\rtf1\ansi\ansicpg932\deff0{\fonttbl{\f0 MS Mincho;}{\f1\fcharset204\cpg1251 Arial CYR;}}\f0 \'93\'fa\'96\'7b\'8c\'ea mixed \f1 \'cf\'f0\'e8\'e2\'e5\'f2\par}",
+        )
+        .unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語 mixed Привет"]);
+        // A group end flushes: the group's 932 bytes decode before the outer 1252 text.
+        let f =
+            parse(br"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0 Arial;}{\f1\fcharset128 MS Mincho;}}\f0 {\f1 \'93\'fa\'96\'7b\'8c\'ea}caf\'e9\par}")
+                .unwrap();
+        assert_eq!(texts(&f), ["Normal:日本語café"]);
+        // An `\ansicpg` switch mid-document flushes too.
+        let f = parse(br"{\rtf1\ansi\ansicpg932 \'93\'fa\ansicpg1251 \'cf\'f0\'e8\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:日При"]);
+        // A run left open at the end of the document isn't lost.
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg932 \x93\xfa").unwrap();
+        assert_eq!(texts(&f), ["Normal:日"]);
+    }
+
+    /// A Windows-1252 document (the default) reads exactly as before: high bytes one at a time.
+    #[test]
+    fn windows_1252_text_is_unchanged() {
+        let f = parse(b"{\\rtf1\\ansi\\ansicpg1252 caf\xe9 na\xefve \x93quoted\x94 \\'80 5\\'b0\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:café naïve “quoted” € 5°"]);
+        // No `\ansicpg`: the default is 1252; the byte values of an East Asian code page keep
+        // their 1252 meaning.
+        let f = parse(b"{\\rtf1\\ansi \xe9\\'92\\'93 \\'fa\\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:é’“ ú"]);
     }
 
     #[test]
@@ -4063,6 +4345,13 @@ mod tests {
     #[test]
     fn escapes() {
         assert_eq!(esc("a{b}\\c\té😀"), "a\\{b\\}\\\\c\\tab \\u233?\\u-10179?\\u-8704?");
+        assert_eq!(esc("col1\u{000E}col2"), "col1\\column col2");
+    }
+
+    #[test]
+    fn column_break_import() {
+        let f = parse(br"{\rtf1\ansi \pard a\column b\par}").unwrap();
+        assert_eq!(texts(&f), ["Normal:a\u{000E}b"]);
     }
 
     #[test]
@@ -4072,5 +4361,40 @@ mod tests {
         assert_eq!(hyperlink(r#"Hyperlink "http://example.com""#), Some("http://example.com".into()));
         assert_eq!(hyperlink(r#"HYPERLINK "http://example.com/path\latest""#), Some("http://example.com/path\\latest".into()));
         assert_eq!(hyperlink(r#"HYPERLINK "http://example.com" \o "Help text""#), Some("http://example.com".into()));
+    }
+
+    #[test]
+    fn distributed_alignment_round_trips() {
+        let rtf = br"{\rtf1\ansi\pard\qd Distributed\par\pard\qj Justified\par}";
+        let flow = parse(rtf).unwrap();
+        let p0 = match &flow.blocks[0] {
+            FBlock::Para(p) => p.align,
+            _ => panic!("expected para"),
+        };
+        let p1 = match &flow.blocks[1] {
+            FBlock::Para(p) => p.align,
+            _ => panic!("expected para"),
+        };
+        assert_eq!(p0, Some(Align::Distribute));
+        assert_eq!(p1, Some(Align::Justify));
+
+        let doc = import(rtf).unwrap();
+        let exported = export(&doc);
+        assert!(exported.contains("\\qd"), "expected \\qd in: {exported}");
+        assert!(exported.contains("\\qj"), "expected \\qj in: {exported}");
+    }
+
+    #[test]
+    fn table_cell_vertical_alignment() {
+        let rtf = br"{\rtf1\ansi\trowd\clvertalt\cellx1000\clvertalc\cellx2000\clvertalb\cellx3000\intbl top\cell center\cell bottom\cell\row}";
+        let doc = import(rtf).unwrap();
+        let wordcraft_doc::Block::Table(t) = &*doc.body[0] else { panic!() };
+        assert_eq!(t.rows[0].cells[0].props.valign, Some(VAlign::Top));
+        assert_eq!(t.rows[0].cells[1].props.valign, Some(VAlign::Center));
+        assert_eq!(t.rows[0].cells[2].props.valign, Some(VAlign::Bottom));
+        let exported = export(&doc);
+        assert!(exported.contains("\\clvertalt"));
+        assert!(exported.contains("\\clvertalc"));
+        assert!(exported.contains("\\clvertalb"));
     }
 }

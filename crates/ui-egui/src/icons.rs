@@ -160,6 +160,10 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line(&[(5.0, 12.0), (3.5, 15.0), (8.0, 15.0)]);
             pen.frect(2.0, 16.5, 18.0, 19.0, yellow);
         }
+        "highlightNoColor" => {
+            pen.fill(&[(5.0, 12.0), (11.0, 4.0), (14.0, 7.0), (8.0, 15.0)], c);
+            pen.line(&[(5.0, 12.0), (3.5, 15.0), (8.0, 15.0)]);
+        }
         "fontcolor" => {
             pen.text(10.0, 9.0, 14.0, "A", c, false);
             pen.frect(2.0, 16.5, 18.0, 19.0, red);
@@ -854,6 +858,12 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             let pts: &[(f32, f32)] =
                 if name == "next" || name == "last" { &[(7.0, 4.0), (13.0, 10.0), (7.0, 16.0)] } else { &[(13.0, 4.0), (7.0, 10.0), (13.0, 16.0)] };
             pen.line_c(pts, a);
+            // First and Last: a bar at the end the chevron points to.
+            match name {
+                "first" => pen.line_c(&[(5.0, 4.0), (5.0, 16.0)], a),
+                "last" => pen.line_c(&[(15.0, 4.0), (15.0, 16.0)], a),
+                _ => {}
+            }
         }
         "finish" => {
             pen.page(3.0, 2.0, 13.0, 15.0);
@@ -1609,5 +1619,28 @@ pub fn library(p: &Painter, r: Rect, icon: &wordcraft_render::icon_lib::Icon, c:
             }
             p.add(Shape::line(pts, stroke));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has_default_highlight_bar(name: &str) -> bool {
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint(ui.painter(), Rect::from_min_size(Pos2::ZERO, egui::vec2(20.0, 20.0)), name, Color32::BLACK, Color32::BLACK);
+        });
+        let yellow = Color32::from_rgb(0xF2, 0xC8, 0x11);
+        let found = output.shapes.iter().any(|shape| matches!(&shape.shape, Shape::Rect(rect) if rect.fill == yellow));
+        output.drop_without_applying_deltas();
+        found
+    }
+
+    /// #4087: No Color uses the pen-only icon, not the ordinary icon's yellow fallback bar.
+    #[test]
+    fn no_colour_highlight_icon_has_no_yellow_bar() {
+        assert!(has_default_highlight_bar("highlight"));
+        assert!(!has_default_highlight_bar("highlightNoColor"));
     }
 }

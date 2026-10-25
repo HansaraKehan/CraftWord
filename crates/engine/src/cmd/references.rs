@@ -21,9 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         CommandSpec::new("references.removeToc", "Remove Table of Contents", "References › Table of Contents", |s, _| {
             if let Some((start, end)) = toc_range(s) {
-                for i in (start..=end).rev() {
-                    s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
-                }
+                remove_toc(s, start, end)?;
                 s.clamp_selection();
             }
             sel_result(s)
@@ -147,6 +145,11 @@ impl FieldCode {
 
     pub fn has(&self, c: char) -> bool {
         self.switches.iter().any(|(k, _)| *k == c)
+    }
+
+    /// A table of figures (`TOC \c` or `TOC \a`, ECMA-376 §17.16.5.68), not a table of contents.
+    pub fn is_table_of_figures(&self) -> bool {
+        self.name == "TOC" && (self.has('c') || self.has('a'))
     }
 
     /// The argument of switch `c`, if the switch is there with one.
@@ -334,6 +337,36 @@ fn toc_range(s: &Session) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+/// Removes the TOC blocks `start..=end` and returns where the TOC was. A field paragraph that ends
+/// a section stays, emptied, so its section break isn't lost (#3889). A heading paragraph of its
+/// own just above the field's paragraph (Word's tables start the field after their heading) goes
+/// with the table.
+fn remove_toc(s: &mut Session, start: usize, end: usize) -> Result<usize, CmdError> {
+    for i in (start + 1..=end).rev() {
+        s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
+    }
+    let at = match s.doc.para_mut(StoryRef::Body, &Path::top(start)) {
+        Ok(p) if p.section.is_some() => {
+            *p = Paragraph { section: p.section.take(), ..Paragraph::new() };
+            start + 1
+        }
+        _ => {
+            s.doc.remove_block(StoryRef::Body, &Path::top(start))?;
+            start
+        }
+    };
+    let titled = start
+        .checked_sub(1)
+        .and_then(|i| s.doc.body.get(i))
+        .and_then(|b| b.as_para())
+        .is_some_and(|p| p.props.style.as_deref() == Some("TOCHeading") && p.section.is_none() && toc_field(p).is_none());
+    if titled {
+        s.doc.remove_block(StoryRef::Body, &Path::top(start - 1))?;
+        return Ok(at - 1);
+    }
+    Ok(at)
+}
+
 /// The caret is in the table of contents (its heading or an entry), where Word's context menu
 /// offers Update Field for the whole table.
 pub fn caret_in_toc(s: &Session) -> bool {
@@ -360,7 +393,7 @@ fn convertible_toc_range(s: &Session, r: &wordcraft_doc::FieldRange) -> bool {
     let field = FieldCode::parse(&r.instr);
     toc_range(s).is_none()
         && field.name == "TOC"
-        && !field.has('c')
+        && !field.is_table_of_figures()
         && r.depth == 0
         && !r.locked
         && r.start.path.depth() == 0
@@ -388,15 +421,24 @@ fn range_toc_to_field(s: &mut Session) -> Result<(), CmdError> {
     // lay it out) leaves an empty paragraph behind, which would show as a blank line above the
     // entries. The field goes at the end of the heading instead, as `insert_toc` places it.
     let i = at.path.last();
+    // Or one holding only the end of Word's TOC control, still styled as an entry: Update Table
+    // would delete it with the old entries anyway.
+    let leftover = |p: &Paragraph| {
+        p.is_empty()
+            || (p.objects.iter().all(|o| matches!(o, InlineObject::ControlEnd))
+                && p.text.chars().all(|c| c == OBJ)
+                && p.props.style.as_deref().is_some_and(|st| st.starts_with("TOC") && st != "TOCHeading"))
+    };
     if at.path.depth() == 0
         && i > 0
-        && s.doc.para_at(&at).is_some_and(|p| p.is_empty())
+        && s.doc.para_at(&at).is_some_and(leftover)
         // The paragraph before may also be the empty one the writer leaves where the engine's TOC
         // field was (the field is saved opening in the first entry), so the next save and update
         // doesn't add a blank line each time (#2182). A blank line the user typed right above a
-        // range TOC is reused the same way, so deleting it later deletes the TOC field.
+        // range TOC is reused the same way, so deleting it later deletes the TOC field. So is one
+        // ending the section before, as above entries in columns (#3889).
         && s.doc.body.get(i - 1).and_then(|b| b.as_para()).is_some_and(|p| {
-            p.props.style.as_deref() == Some("TOCHeading") || (p.is_empty() && p.objects.is_empty() && p.section.is_none())
+            p.props.style.as_deref() == Some("TOCHeading") || (p.is_empty() && p.objects.is_empty())
         })
     {
         s.doc.remove_block(StoryRef::Body, &at.path)?;
@@ -425,7 +467,7 @@ fn toc_field(p: &Paragraph) -> Option<String> {
     p.objects.iter().find_map(|o| match o {
         InlineObject::Field { instr, .. } => {
             let f = FieldCode::parse(instr);
-            (f.name == "TOC" && !f.has('c')).then(|| instr.clone())
+            (f.name == "TOC" && !f.is_table_of_figures()).then(|| instr.clone())
         }
         _ => None,
     })
@@ -436,7 +478,7 @@ fn cached_toc_tabs(s: &Session) -> Vec<(String, Vec<TabStop>)> {
     let span = toc_range(s).map(|(start, end)| (start.saturating_add(1), end)).or_else(|| {
         s.doc.field_ranges(StoryRef::Body).into_iter().find_map(|r| {
             let f = FieldCode::parse(&r.instr);
-            (r.depth == 0 && !r.locked && r.start.path.depth() == 0 && r.end.path.depth() == 0 && f.name == "TOC" && !f.has('c'))
+            (r.depth == 0 && !r.locked && r.start.path.depth() == 0 && r.end.path.depth() == 0 && f.name == "TOC" && !f.is_table_of_figures())
                 .then_some((r.start.path.last(), r.end.path.last()))
         })
     });
@@ -469,9 +511,7 @@ fn insert_toc(s: &mut Session, v: &Value) -> CmdResult {
             return sel_result(s);
         }
         Some((start, end)) => {
-            for i in (start..=end).rev() {
-                s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
-            }
+            let start = remove_toc(s, start, end)?;
             s.doc.insert_block(StoryRef::Body, &Path::top(start), Block::Para(Paragraph::new()))?;
             placeholder = true;
             s.sel = Selection::caret(Pos { story: StoryRef::Body, path: Path::top(start), off: 0 });
@@ -560,7 +600,7 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>, tabs: &[(String, V
         for o in &mut p.objects {
             if let InlineObject::Field { instr, result, .. } = o {
                 let f = FieldCode::parse(instr);
-                if f.name == "TOC" && !f.has('c') {
+                if f.name == "TOC" && !f.is_table_of_figures() {
                     result.clear();
                 }
             }
@@ -580,10 +620,13 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>, tabs: &[(String, V
     for i in (start + 1..=end).rev() {
         s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
     }
-    // The text width of the TOC's own section, not the caret's: after Select All the caret sits
-    // at the end of the document, possibly in a wider (landscape) section.
-    let section = s.doc.section_index_of(start);
-    let width = s.doc.sections().get(section).map_or_else(|| super::page::sect(s).text_width(), |(_, x)| x.text_width());
+    // The column width of the TOC's own section, not the caret's: after Select All the caret sits
+    // at the end of the document, possibly in a wider (landscape) section. In columns, the first
+    // column's, as Word does (#3889); after a field paragraph ending a section, the next section's.
+    let after_break = s.doc.body.get(start).and_then(|b| b.as_para()).is_some_and(|p| p.section.is_some());
+    let section = s.doc.section_index_of(start + usize::from(after_break));
+    let column = |x: &wordcraft_doc::SectionProps| x.column_boxes().first().map_or(x.text_width(), |(_, w)| *w);
+    let width = s.doc.sections().get(section).map_or_else(|| column(&super::page::sect(s)), |(_, x)| column(x));
     let entries = toc_entries(s, &f);
     let links: Vec<Option<String>> = if f.has('h') {
         let mut v = Vec::new();
@@ -1013,6 +1056,19 @@ pub fn update_fields_in(s: &mut Session, all: bool) -> Result<(), CmdError> {
                 "TITLE" => updates.push((k, s.doc.core.title.clone())),
                 "AUTHOR" => updates.push((k, s.doc.core.creator.clone())),
                 "NUMWORDS" => updates.push((k, s.doc.word_count().to_string())),
+                // DOCPROPERTY <name>: a custom property first, then a built-in one (#1798).
+                "DOCPROPERTY" => {
+                    if let Some(name) = doc_property_arg(instr)
+                        && let Some(v) = doc_property(&s.doc, &name)
+                    {
+                        updates.push((k, v));
+                    }
+                }
+                "FILENAME" => {
+                    let (fn_name, fn_path) = s.resolved_filenames();
+                    let text = if has_switch(instr, 'p') { fn_path } else { fn_name };
+                    updates.push((k, text));
+                }
                 _ => {}
             }
         }
@@ -1072,6 +1128,38 @@ pub fn refresh_date_fields(doc: &mut wordcraft_doc::Document) {
             para.touch();
         }
     }
+}
+
+/// The property name of a `DOCPROPERTY` field: the word (or quoted text) after the field name,
+/// before any switch (`DOCPROPERTY "Project Name" \* MERGEFORMAT`).
+fn doc_property_arg(instr: &str) -> Option<String> {
+    let rest = instr.trim().split_once(char::is_whitespace)?.1.trim_start();
+    let name = match rest.strip_prefix('"') {
+        Some(q) => q.split('"').next().unwrap_or(""),
+        None => rest.split([' ', '\\']).next().unwrap_or(""),
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The value of a document property under the name a `DOCPROPERTY` field uses: a custom property
+/// when one has this name, else the built-in property (English names, case-insensitively, as
+/// Word's field accepts). `None` for a name this application doesn't know.
+fn doc_property(doc: &wordcraft_doc::Document, name: &str) -> Option<String> {
+    if let Some(v) = doc.custom_prop(name) {
+        return Some(v.to_string());
+    }
+    let c = &doc.core;
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "title" => c.title.clone(),
+        "subject" => c.subject.clone(),
+        "author" | "creator" => c.creator.clone(),
+        "keywords" => c.keywords.clone(),
+        "comments" | "description" => c.description.clone(),
+        "category" => c.category.clone(),
+        "lastmodifiedby" | "last modified by" | "lastsavedby" | "last saved by" => c.last_modified_by.clone(),
+        "revisionnumber" | "revision number" | "revision" => c.revision.to_string(),
+        _ => return None,
+    })
 }
 
 /// A field's `\@` date picture: the quoted text after it (switches may follow), or one word.
@@ -1323,6 +1411,48 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn update_fields_filename() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.path = Some(std::path::PathBuf::from("/docs/my_thesis.docx"));
+        s.run("insert.field", &serde_json::json!({"instr": "FILENAME"})).unwrap();
+        let fields = story_fields(&s, StoryRef::Body);
+        assert_eq!(fields[0], ("FILENAME".into(), "my_thesis.docx".into()));
+
+        s.run("insert.field", &serde_json::json!({"instr": r"FILENAME \p"})).unwrap();
+        let fields = story_fields(&s, StoryRef::Body);
+        assert_eq!(fields[1], (r"FILENAME \p".into(), "/docs/my_thesis.docx".into()));
+    }
+
+    #[test]
+    fn update_fields_filename_titled_unsaved() {
+        let mut doc = wordcraft_doc::Document::new();
+        doc.core.title = "Important Document".into();
+        let mut s = Session::new(doc);
+        s.run("insert.field", &serde_json::json!({"instr": "FILENAME"})).unwrap();
+        let fields = story_fields(&s, StoryRef::Body);
+        assert_eq!(fields[0], ("FILENAME".into(), "Document1".into()));
+
+        let l = s.layout();
+        let text: String = l.pages[0]
+            .items
+            .iter()
+            .filter_map(|it| {
+                if let wordcraft_layout::Placed::Lines { para, .. } = it {
+                    Some(para.shown.iter().map(|x| x.1.clone()).collect::<String>())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(text.contains("Document1"), "live layout renders Document1: {text}");
+        assert!(!text.contains("Important Document"), "live layout must not render title: {text}");
+
+        s.run("references.updateFields", &serde_json::json!({})).unwrap();
+        let fields_after = story_fields(&s, StoryRef::Body);
+        assert_eq!(fields_after[0], ("FILENAME".into(), "Document1".into()));
     }
 
     /// #1706 (Word check): Update Field with the caret in the body leaves a header's fields alone.

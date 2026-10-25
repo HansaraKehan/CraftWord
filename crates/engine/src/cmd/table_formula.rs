@@ -228,6 +228,50 @@ enum Tok {
     Cmp(&'static str),
 }
 
+fn parse_num_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<Tok, CmdError> {
+    let mut lit = String::new();
+    while let Some(&d) = chars.peek() {
+        if d.is_ascii_digit() || d == '.' {
+            lit.push(d);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let x = lit.parse::<f64>().map_err(|_| syntax(format!("`{lit}` isn't a number")))?;
+    Ok(Tok::Num(x))
+}
+
+fn parse_name_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Tok {
+    let mut name = String::new();
+    while let Some(&d) = chars.peek() {
+        if d.is_ascii_alphanumeric() {
+            name.push(d.to_ascii_uppercase());
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    Tok::Name(name)
+}
+
+fn parse_cmp_token(ch: char, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Tok {
+    chars.next();
+    let next = chars.peek().copied();
+    let (op, longer) = match (ch, next) {
+        ('<', Some('=')) => ("<=", true),
+        ('<', Some('>')) => ("<>", true),
+        ('>', Some('=')) => (">=", true),
+        ('<', _) => ("<", false),
+        ('>', _) => (">", false),
+        _ => ("=", false),
+    };
+    if longer {
+        chars.next();
+    }
+    Tok::Cmp(op)
+}
+
 fn tokenize(s: &str) -> Result<Vec<Tok>, CmdError> {
     let mut out = Vec::new();
     let mut chars = s.chars().peekable();
@@ -235,46 +279,14 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, CmdError> {
         if ch.is_whitespace() {
             chars.next();
         } else if ch.is_ascii_digit() || ch == '.' {
-            let mut lit = String::new();
-            while let Some(&d) = chars.peek() {
-                if d.is_ascii_digit() || d == '.' {
-                    lit.push(d);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            let x = lit.parse::<f64>().map_err(|_| syntax(format!("`{lit}` isn't a number")))?;
-            out.push(Tok::Num(x));
+            out.push(parse_num_token(&mut chars)?);
         } else if ch.is_ascii_alphabetic() {
-            let mut name = String::new();
-            while let Some(&d) = chars.peek() {
-                if d.is_ascii_alphanumeric() {
-                    name.push(d.to_ascii_uppercase());
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            out.push(Tok::Name(name));
+            out.push(parse_name_token(&mut chars));
         } else if matches!(ch, '+' | '-' | '*' | '/' | '^' | '(' | ')' | ',' | ':') {
             out.push(Tok::Op(ch));
             chars.next();
-        } else if matches!(ch, '<' | '>' | '=') {
-            chars.next();
-            let next = chars.peek().copied();
-            let (op, longer) = match (ch, next) {
-                ('<', Some('=')) => ("<=", true),
-                ('<', Some('>')) => ("<>", true),
-                ('>', Some('=')) => (">=", true),
-                ('<', _) => ("<", false),
-                ('>', _) => (">", false),
-                _ => ("=", false),
-            };
-            if longer {
-                chars.next();
-            }
-            out.push(Tok::Cmp(op));
+        } else if matches!(ch, '<'..='>') {
+            out.push(parse_cmp_token(ch, &mut chars));
         } else {
             return Err(syntax(format!("`{ch}` isn't part of a formula")));
         }
@@ -468,7 +480,7 @@ impl Parser {
 
 /// `B4` → (row 3, column 1): the row counts from 1 and the column from A.
 fn cell_ref(name: &str) -> Option<(usize, usize)> {
-    let letters: String = name.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let letters: String = name.chars().take_while(char::is_ascii_alphabetic).collect();
     let digits = name.get(letters.len()..)?;
     if letters.is_empty() || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
@@ -724,13 +736,21 @@ fn call(name: &str, args: &[Expr], here: &Here) -> Result<f64, CmdError> {
         }
         "ABS" => Ok(one(name, args, here)?.abs()),
         "INT" => Ok(one(name, args, here)?.floor()),
-        "SIGN" => Ok(one(name, args, here)?.signum()),
+        "SIGN" => {
+            let x = one(name, args, here)?;
+            Ok(if x == 0.0 { 0.0 } else { x.signum() })
+        }
         "ROUND" => match args {
             [a, b] => {
                 let x = scalar(eval(a, here)?)?;
                 let digits = scalar(eval(b, here)?)?.clamp(-15.0, 15.0).trunc();
                 let scale = 10f64.powi(digits as i32);
-                finite((x * scale).round() / scale)
+                let scaled = x * scale;
+                if !scaled.is_finite() {
+                    // Too large to have a fractional part at this precision.
+                    return finite(x);
+                }
+                finite(scaled.round() / scale)
             }
             _ => Err(CmdError::Failed("ROUND takes two arguments".into())),
         },
@@ -770,6 +790,16 @@ mod tests {
     }
 
     #[test]
+    fn sign_of_zero_is_zero() {
+        let t = table(&[&["0", "5", "-5"]]);
+        assert_eq!(ev(&t, 0, 0, "=SIGN(0)"), Ok(0.0));
+        assert_eq!(ev(&t, 0, 0, "=SIGN(-0)"), Ok(0.0));
+        assert_eq!(ev(&t, 0, 1, "=SIGN(A1)"), Ok(0.0), "a cell holding 0");
+        assert_eq!(ev(&t, 0, 0, "=SIGN(5)"), Ok(1.0));
+        assert_eq!(ev(&t, 0, 0, "=SIGN(-5)"), Ok(-1.0));
+    }
+
+    #[test]
     fn cell_references_count_from_one_and_from_a() {
         assert_eq!(cell_ref("A1"), Some((0, 0)));
         assert_eq!(cell_ref("B4"), Some((3, 1)));
@@ -805,6 +835,14 @@ mod tests {
         let t = table(&[&["1"], &["4"], &["7"], &[""]]);
         let err = ev(&t, 3, 0, "=MEDIAN(ABOVE)").err().map(|e| e.to_string()).unwrap_or_default();
         assert!(err.contains("MEDIAN"), "{err}");
+    }
+
+    #[test]
+    fn round_large_values_return_input() {
+        let t = table(&[&["1", "2"], &["3", "4"], &["", ""]]);
+        let big = format!("1{}", "0".repeat(300));
+        assert_eq!(ev(&t, 2, 0, &format!("=ROUND({big},15)")), Ok(1e300));
+        assert_eq!(ev(&t, 2, 0, &format!("=ROUND({big},2)")), Ok(1e300));
     }
 
     #[test]
