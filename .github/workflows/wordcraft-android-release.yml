@@ -219,8 +219,8 @@ jobs:
             # link under it): this is WordCraft's own release, not upstream's, so it lists upstream's
             # code changes, not who joined upstream's project.
             awk '
-              /^##[ \t]*New Contributors[ \t]*$/ { skip = 1; next }
-              /^##[^#]/ { skip = 0 }
+              /^#+[ \t]*New Contributors[ \t]*$/ { skip = 1; next }
+              /^#+[ \t]/ { skip = 0 }
               !skip
             ' upstream-raw.md > upstream-notes.md
             UPSTREAM_NOTES=upstream-notes.md
