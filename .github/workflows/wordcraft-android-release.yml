@@ -64,10 +64,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
         run: |
+          # One release per upstream version. Later commits, or changes to the Android layer, do not make a new
+          # release of the same version; to rebuild one, run the workflow with "force".
           VER=$(grep -m1 '^version' src/Cargo.toml | cut -d'"' -f2)
           SHA=$(git -C src rev-parse --short=7 HEAD)
-          LAYER=$(sha256sum fork/android-layer/wordcraft-android-layer.tar.gz | cut -c1-6)
-          TAG="android-v${VER}-${SHA}-${LAYER}"
+          TAG="android-v${VER}"
           {
             echo "version=$VER"
             echo "sha=$SHA"
@@ -189,7 +190,8 @@ jobs:
               z.write(b / "dex/classes.dex", "classes.dex")
               z.write(os.environ["LIB"], "lib/arm64-v8a/libwordcraft_android.so")
               for p in ["LICENSE-MIT", "LICENSE-APACHE", "ATTRIBUTION.md",
-                        "assets/app-icon/LICENSE.txt", "vendor/winit/LICENSE"]:
+                        "assets/app-icon/LICENSE.txt", "vendor/winit/LICENSE", "vendor/winit-android/LICENSE",
+                        *map(str, sorted(Path("assets/fonts").glob("*.txt")))]:
                   if Path(p).exists():
                       z.write(p, "assets/licenses/" + p.replace("/", "_"))
           PY
@@ -211,6 +213,13 @@ jobs:
           SHA: ${{ steps.ver.outputs.sha }}
           REF: ${{ steps.ref.outputs.ref }}
         run: |
+          # The upstream release's own notes, for this version (its GitHub release, by its tag).
+          if gh release view "v${VERSION}" --repo "$UPSTREAM" --json body --jq .body > upstream-notes.md 2>/dev/null && [ -s upstream-notes.md ]; then
+            UPSTREAM_NOTES=upstream-notes.md
+          else
+            printf 'Upstream has no release notes for v%s yet.\n' "$VERSION" > upstream-notes.md
+            UPSTREAM_NOTES=upstream-notes.md
+          fi
           cat > notes.md <<NOTES
           **WordCraft ${VERSION} for Android** (early preview, ARM64)
 
@@ -220,8 +229,11 @@ jobs:
           - Download the \`.apk\`, open it, and allow installs from your file manager or browser when Android asks.
           - Unofficial build, not made or supported by the WordCraft team. If an update will not install over an older build, uninstall the old one first.
           NOTES
-          if [ -f "$RUNNER_TEMP/layer/whats-new.md" ]; then
-            { echo; echo "## What's new"; echo; cat "$RUNNER_TEMP/layer/whats-new.md"; } >> notes.md
+          { echo; echo "## WordCraft ${VERSION} changes (upstream)"; echo; cat "$UPSTREAM_NOTES"; } >> notes.md
+          # Android-only changes: only the section written for this version (in whats-new.md, headed "## <version>").
+          ANDROID=$(awk -v v="$VERSION" '$0 == "## " v {on = 1; next} /^## / {on = 0} on' "$RUNNER_TEMP/layer/whats-new.md" 2>/dev/null)
+          if [ -n "$(printf '%s' "$ANDROID" | tr -d '[:space:]')" ]; then
+            { echo; echo "## Android changes in ${VERSION}"; echo; printf '%s\n' "$ANDROID"; } >> notes.md
           fi
           gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "WordCraft ${VERSION} Android (${SHA})" --notes-file notes.md
+            --title "WordCraft ${VERSION} Android" --notes-file notes.md
