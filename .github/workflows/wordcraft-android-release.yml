@@ -216,13 +216,14 @@ jobs:
           # The upstream release's own notes, for this version (its GitHub release, by its tag).
           if gh release view "v${VERSION}" --repo "$UPSTREAM" --json body --jq .body > upstream-raw.md 2>/dev/null && [ -s upstream-raw.md ]; then
             # Drop GitHub's auto-generated "New Contributors" section (and the "Full Changelog" compare
-            # link under it): this is WordCraft's own release, not upstream's, so it lists upstream's
-            # code changes, not who joined upstream's project.
+            # link under it), and the "by @user in <PR link>" attribution GitHub appends to every bullet:
+            # this is WordCraft's own release, not upstream's, so it lists upstream's code changes, not who
+            # made them or joined upstream's project.
             awk '
               /^#+[ \t]*New Contributors[ \t]*$/ { skip = 1; next }
               /^#+[ \t]/ { skip = 0 }
               !skip
-            ' upstream-raw.md > upstream-notes.md
+            ' upstream-raw.md | sed -E 's/ by @[^ ]+ in [^ ]+[[:space:]]*$//' > upstream-notes.md
             UPSTREAM_NOTES=upstream-notes.md
           else
             printf 'Upstream has no release notes for v%s yet.\n' "$VERSION" > upstream-notes.md
