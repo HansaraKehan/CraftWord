@@ -239,10 +239,54 @@ jobs:
           - Unofficial build, not made or supported by the WordCraft team. If an update will not install over an older build, uninstall the old one first.
           NOTES
           { echo; echo "## WordCraft ${VERSION} changes (upstream)"; echo; cat "$UPSTREAM_NOTES"; } >> notes.md
-          # Android-only changes: only the section written for this version (in whats-new.md, headed "## <version>").
-          ANDROID=$(awk -v v="$VERSION" '$0 == "## " v {on = 1; next} /^## / {on = 0} on' "$RUNNER_TEMP/layer/whats-new.md" 2>/dev/null)
+          # Android-only changes: the topmost "## ..." section of whats-new.md, whatever its heading says.
+          # Matching the heading text against $VERSION broke silently the moment upstream shipped a version
+          # newer than the heading already in the file (0.14.0 released while the file still said "## 0.13.2"):
+          # the awk found no match, so the whole Android section was dropped from that release with no error.
+          # Going by position instead means the heading's own wording never has to predict the next upstream
+          # version in advance. "Entries under an old heading never appear again" still holds: add a new
+          # heading above the current one before writing the next batch, and the old one becomes unreachable.
+          ANDROID=$(awk '/^## / { if (seen) exit; seen = 1; next } seen' "$RUNNER_TEMP/layer/whats-new.md" 2>/dev/null)
           if [ -n "$(printf '%s' "$ANDROID" | tr -d '[:space:]')" ]; then
             { echo; echo "## Android changes in ${VERSION}"; echo; printf '%s\n' "$ANDROID"; } >> notes.md
           fi
           gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "WordCraft ${VERSION} Android" --notes-file notes.md
+
+      - name: Keep the README's Android features list current
+        if: steps.ver.outputs.skip != 'true'
+        working-directory: fork
+        run: |
+          # Not a changelog (that's whats-new.md, and the release notes above): every feature the Android
+          # build has gained stays listed here, so the README always describes what today's build can do,
+          # without anyone having to remember to update it by hand. Regenerated on every successful release
+          # from the full whats-new.md (every "## ..." section, not just the newest one), so an entry keeps
+          # appearing here even once it has stopped appearing in new release notes.
+          START='<!-- android-features:start -->'
+          END='<!-- android-features:end -->'
+          if ! grep -qF "$START" README.md; then
+            {
+              echo
+              echo "## WordCraft for Android"
+              echo
+              echo "An unofficial Android build is published automatically from this fork's \`android-v*\` [releases](https://github.com/${GITHUB_REPOSITORY}/releases). What it can do:"
+              echo
+              echo "$START"
+              echo "$END"
+            } >> README.md
+          fi
+          FEATURES=$(grep '^- ' "$RUNNER_TEMP/layer/whats-new.md")
+          awk -v start="$START" -v end="$END" -v features="$FEATURES" '
+            $0 == start { print; print features; skip = 1; next }
+            $0 == end { skip = 0 }
+            !skip
+          ' README.md > README.md.new
+          mv README.md.new README.md
+          if ! git diff --quiet -- README.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "Update the Android features list in README [skip ci]"
+            git fetch origin main
+            git push origin HEAD:main || echo "::warning::couldn't push the README update (the branch moved meanwhile); update README.md by hand"
+          fi
