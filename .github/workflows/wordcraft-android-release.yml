@@ -16,6 +16,10 @@ on:
         description: "Build again even if this upstream version already has a release"
         type: boolean
         default: false
+      publish:
+        description: "Publish a release (uncheck to just build and attach the APK to this workflow run, for trying a change before it goes out)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -63,9 +67,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           # One release per upstream version. Later commits, or changes to the Android layer, do not make a new
-          # release of the same version; to rebuild one, run the workflow with "force".
+          # release of the same version; to rebuild one, run the workflow with "force". With "publish" unchecked
+          # there's no release to collide with, so every run just builds (see the "publish" input's own
+          # description); that's also what a plain schedule trigger does, since inputs.publish is then empty.
           VER=$(grep -m1 '^version' src/Cargo.toml | cut -d'"' -f2)
           SHA=$(git -C src rev-parse --short=7 HEAD)
           TAG="android-v${VER}"
@@ -74,7 +81,9 @@ jobs:
             echo "sha=$SHA"
             echo "tag=$TAG"
           } >> "$GITHUB_OUTPUT"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          if [ "${PUBLISH:-true}" != "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             if [ "$FORCE" = "true" ]; then
               gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
               echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -203,8 +212,16 @@ jobs:
           "$BT/apksigner" verify --verbose "$APK"
           echo "APK=$APK" >> "$GITHUB_ENV"
 
+      - name: Upload the APK as a build artifact (publish unchecked - no release)
+        if: steps.ver.outputs.skip != 'true' && inputs.publish == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordcraft-android-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.sha }}
+          path: src/dist/*.apk
+          retention-days: 14
+
       - name: Publish the release
-        if: steps.ver.outputs.skip != 'true'
+        if: steps.ver.outputs.skip != 'true' && inputs.publish != 'false'
         working-directory: src
         env:
           GH_TOKEN: ${{ github.token }}
@@ -248,13 +265,29 @@ jobs:
           # heading above the current one before writing the next batch, and the old one becomes unreachable.
           ANDROID=$(awk '/^## / { if (seen) exit; seen = 1; next } seen' "$RUNNER_TEMP/layer/whats-new.md" 2>/dev/null)
           if [ -n "$(printf '%s' "$ANDROID" | tr -d '[:space:]')" ]; then
-            { echo; echo "## Android changes in ${VERSION}"; echo; printf '%s\n' "$ANDROID"; } >> notes.md
+            # Belt-and-braces on top of the position-based extraction above: tag this section with a hash of
+            # its own text, and skip it if the most recent android-v* release already carries that same hash.
+            # The position rule already keeps entries from being written twice in whats-new.md itself, so this
+            # only catches re-running the workflow (e.g. with "force") before whats-new.md gets a new heading,
+            # which would otherwise publish the identical Android section again under a second release.
+            HASH=$(printf '%s' "$ANDROID" | sha1sum | cut -d' ' -f1)
+            MARKER="<!-- android-news:${HASH} -->"
+            PREV_TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 5 --json tagName \
+              --jq '.[] | select(.tagName | startswith("android-v")) | .tagName' | head -n1)
+            ALREADY_PUBLISHED=false
+            if [ -n "$PREV_TAG" ] && gh release view "$PREV_TAG" --repo "$GITHUB_REPOSITORY" \
+                --json body --jq .body 2>/dev/null | grep -qF "$MARKER"; then
+              ALREADY_PUBLISHED=true
+            fi
+            if [ "$ALREADY_PUBLISHED" != "true" ]; then
+              { echo; echo "## Android changes in ${VERSION}"; echo; printf '%s\n' "$ANDROID"; echo; echo "$MARKER"; } >> notes.md
+            fi
           fi
           gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "WordCraft ${VERSION} Android" --notes-file notes.md
 
       - name: Keep the README's Android features list current
-        if: steps.ver.outputs.skip != 'true'
+        if: steps.ver.outputs.skip != 'true' && inputs.publish != 'false'
         working-directory: fork
         run: |
           # Not a changelog (that's whats-new.md, and the release notes above): every feature the Android
