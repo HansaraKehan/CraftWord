@@ -391,3 +391,23 @@ Forks and modified versions must remove them.
   <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
   <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
+
+## WordCraft for Android
+
+An unofficial Android build is published automatically from this fork's `android-v*` [releases](https://github.com/HansaraKehan/CraftWord/releases). What it can do:
+
+<!-- android-features:start -->
+- **Tabs.** More than one document can be open at once: where the title bar showed one document's name, it now shows a tab for each open document — tap one to switch, its × to close it. A "+" at the end goes to WordCraft's own start screen, to open an existing document or start a blank one. AutoSave, undo/redo, search and the account button stay exactly where they were.
+- **Documents look closer to Word.** WordCraft only looked for fonts in desktop folders, which Android doesn't have, so it used just its few built-in fonts. It now also reads the fonts Android ships (`/system/fonts` and its siblings). That brings Noto and Roboto, and the fonts for Chinese, Japanese, Korean, Arabic, Hindi and other scripts, so text that showed as empty boxes or in the wrong font should now draw.
+- **Mouse wheel, Ctrl/Shift shortcuts and mouse selection work** with a hardware mouse and keyboard.
+- **Missing fonts:** documents using fonts this device lacks use Carlito, Caladea and Liberation (same widths as Calibri, Cambria, Arial and Times New Roman), and Home › Font › Replace Missing Font… lets you pick a replacement for each.
+- **Page borders** keep their own distance on each side and honour "measure from text".
+- **Welcome screen.** The first time you open the app it explains what WordCraft does and why it needs file access, with a picture, instead of throwing Android's settings page at you. Allow it with one button, or choose "Not now".
+- **Documents survive uninstalling.** With file access allowed, documents are kept in Documents/WordCraft, outside the app. Documents kept inside the app by earlier versions move there automatically once access is allowed.
+- **Findable file names.** A new document's file is named after its first words plus the date and time ("Meeting notes - 2026-10-31 05-30"), and renamed as those words settle.
+- **Light and dark follow the system.** "Use system setting" really follows Android's theme, live.
+- **Ctrl+V on a hardware keyboard pastes** what is on Android's clipboard (Ctrl+Shift+V keeps text only, Ctrl+Alt+V opens Paste Special), reading Android's real system clipboard directly — egui's own Android clipboard handling otherwise silently swallows Ctrl+V if nothing had been copied inside the app yet, so Ctrl+C, Ctrl+X and Ctrl+V are handled directly against Android's real clipboard instead.
+- **Recent documents come back after reinstalling.** The list is also kept in Documents/WordCraft/recent-documents.txt, and restored from it when the app starts with file access allowed.
+- **Debug log** shares the newest lines, and saves the whole log to Documents/WordCraft/WordCraft-debug-log.txt.
+- **Opening a document from a file manager ("Open with WordCraft") shows it straight away**, instead of only adding it to Recent Documents until tapped again.
+<!-- android-features:end -->
