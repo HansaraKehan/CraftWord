@@ -1,0 +1,202 @@
+name: Check that the Android layer still builds on upstream's latest release
+
+# Checks upstream's newest *release* (not main) against the Android layer and only checks that it
+# compiles - no APK, no GitHub release of ours. Runs against a release rather than main so this
+# never fires over upstream's in-progress work on main that might be fixed before it ships; it
+# tracks exactly what wordcraft-android-release.yml will build next.
+#
+# On failure: every compile error found is collected into one issue (or added to the existing open
+# one if this is a new upstream version), not just the first few - paste the whole "errors found"
+# block to Claude and ask for a fixed layer. When it builds again, the issue is closed automatically.
+# Needs: Settings > General > Features > Issues ticked (forks have Issues off by default).
+on:
+  schedule:
+    - cron: "43 20 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream tag or branch to check (empty = upstream's latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: android-canary
+  cancel-in-progress: true
+
+env:
+  UPSTREAM: storytold/wordcraft
+  TARGET: aarch64-linux-android
+  NDK_VERSION: 28.2.13676358
+  CARGO_TERM_COLOR: never
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Pick the upstream ref
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          # Default to upstream's latest published release, not main: that's what the real release
+          # workflow will actually build next, so this is the version worth knowing about early.
+          REF="$INPUT_REF"
+          if [ -z "$REF" ]; then
+            REF=$(gh api "repos/${UPSTREAM}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          fi
+          if [ -z "$REF" ]; then
+            echo "::error::upstream has no releases yet (and no ref was given); nothing to check"
+            exit 1
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Check out this repository (the Android layer lives here)
+        uses: actions/checkout@v4
+        with:
+          path: fork
+
+      - name: Check out upstream WordCraft
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ steps.ref.outputs.ref }}
+          path: src
+
+      - name: Skip if this version already has a real release
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Nothing to canary once wordcraft-android-release.yml has actually shipped this version:
+          # if it built, it built, and if it didn't, that workflow's own run already says so.
+          VER=$(grep -m1 '^version' src/Cargo.toml | cut -d'"' -f2)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "android-v${VER}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "android-v${VER} is already released - nothing to check."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Add the Android layer on top of upstream
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        working-directory: src
+        run: |
+          mkdir -p "$RUNNER_TEMP/layer"
+          tar xzf ../fork/android-layer/wordcraft-android-layer.tar.gz -C "$RUNNER_TEMP/layer"
+          # Every patch's own report (applied / applied with fuzz / upstream changed too much) goes
+          # into the same log the issue is built from - patch-level drift is exactly as worth seeing
+          # as a compile error, and used to only show up by scrolling the raw run.
+          python3 "$RUNNER_TEMP/layer/apply_layer.py" 2>&1 | tee -a "$RUNNER_TEMP/check.log"
+
+      - name: Install the Rust version upstream asks for
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          # egui 0.36 needs Rust 1.95 even where the workspace still says 1.90: never go below it.
+          RUSTV=$(grep -m1 '^rust-version' src/Cargo.toml | cut -d'"' -f2)
+          RUSTV=$(printf '%s\n%s\n' "${RUSTV:-1.95}" "1.95" | sort -V | tail -n1)
+          rustup toolchain install "$RUSTV" --profile minimal --target "$TARGET"
+          rustup default "$RUSTV"
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          workspaces: src
+          key: android-arm64-check
+
+      - name: Install the Android NDK
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "ndk;${NDK_VERSION}"
+
+      - name: Compile the Android app (check only, whole workspace)
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        working-directory: src
+        run: |
+          BIN="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$BIN/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$BIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android28-clang"
+          # --workspace (not just -p wordcraft-android): a crate our patches touch but that
+          # wordcraft-android doesn't itself depend on would otherwise never even get checked, and
+          # Cargo does keep checking workspace members that don't depend on an already-broken one.
+          # One real limit stays: if a foundational crate (wordcraft-engine, say) fails outright,
+          # nothing that depends on it can be type-checked at all, so its errors won't show up
+          # until the earlier crate's own errors are fixed - that's Rust's dependency graph, not
+          # something this workflow can route around. What it can do is stop throwing away errors
+          # *within* whichever crates do get checked: see the next step, which no longer caps the
+          # report at the first ~80 lines near the first match.
+          cargo check --workspace --all-targets --target "$TARGET" -j 3 2>&1 | tee -a "$RUNNER_TEMP/check.log"
+
+      - name: Close the open "build breaks" issue (it builds again)
+        if: success() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          N=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label android-build-broken --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          if [ -n "$N" ]; then
+            gh issue close "$N" --repo "$GITHUB_REPOSITORY" --comment "The Android layer builds on upstream \`${{ steps.ref.outputs.ref }}\` again (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})." || true
+          fi
+
+      - name: Report every error found
+        if: failure() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.ref.outputs.ref }}
+          VERSION: ${{ steps.gate.outputs.version }}
+        run: |
+          LOG="$RUNNER_TEMP/check.log"
+          touch "$LOG"
+          # Every rustc error block (its own "error[...]"/"error:" line through to the blank line
+          # that ends it), every patch-apply problem apply_layer.py reported, and anything the
+          # Android-layer script itself fails loudly over - not just the first one found, so one
+          # paste to Claude carries the whole picture instead of a fix-rebuild-see-the-next-one loop.
+          ERR=$(awk '
+            /^(error|Error|warning: unused|Traceback)/ || /applied with fuzz|changed too much|LAYER ERROR/ { grab = 1 }
+            grab { print }
+            /^$/ { grab = 0 }
+          ' "$LOG")
+          if [ -z "$(printf '%s' "$ERR" | tr -d '[:space:]')" ]; then
+            ERR=$(tail -n 200 "$LOG")
+          fi
+          # Keep it pasteable: a few hundred lines is plenty to act on and still fits an issue body.
+          ERR=$(printf '%s\n' "$ERR" | head -n 400)
+          ERR=$(printf '%s\n' "$ERR" | sed 's/@/＠/g')
+          SIG=$(printf '%s' "$ERR" | sha256sum | cut -c1-12)
+          {
+            echo "The Android layer does not build on upstream \`${UPSTREAM}\`'s release \`${REF}\` (version ${VERSION})."
+            echo
+            echo "Paste everything in the block below to Claude as one message, and ask for a fixed layer."
+            echo
+            echo '```'
+            printf '%s\n' "$ERR"
+            echo '```'
+            echo
+            echo "Full log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "<!-- error-signature:${SIG} -->"
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+          gh label create android-build-broken --repo "$GITHUB_REPOSITORY" --color B60205 --description "The Android layer does not build on upstream" --force || true
+          N=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label android-build-broken --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          if [ -n "$N" ]; then
+            # The exact same errors as already reported: say nothing new.
+            if gh issue view "$N" --repo "$GITHUB_REPOSITORY" --json body,comments --jq '[.body] + [.comments[].body] | join("\n")' 2>/dev/null | grep -q "error-signature:${SIG}"; then
+              echo "This exact set of errors is already reported in issue #$N."
+            else
+              gh issue comment "$N" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" || true
+            fi
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Android build breaks on upstream release ${REF}" --label android-build-broken --body-file "$RUNNER_TEMP/body.md" || echo "Could not open an issue: tick Settings > General > Features > Issues."
+          fi
