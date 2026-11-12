@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Upstream branch or tag to build (empty = main)"
+        description: "Upstream branch or tag to build (empty = upstream's newest release, else main)"
         required: false
         default: ""
       force:
@@ -43,10 +43,21 @@ jobs:
       - name: Pick the upstream ref
         id: ref
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_REF: ${{ inputs.ref }}
           VAR_REF: ${{ vars.UPSTREAM_REF }}
         run: |
-          REF="${INPUT_REF:-${VAR_REF:-main}}"
+          # An explicit ref (the run's input, or the UPSTREAM_REF repository variable) always wins.
+          # Otherwise build upstream's newest release tag. Building "main" by default meant the version
+          # came from main's Cargo.toml, which can lag upstream's releases: the tag stayed the same, the
+          # release already existed, and every later run said "nothing to do". If upstream has no
+          # release (or the lookup fails), fall back to main as before.
+          REF="${INPUT_REF:-$VAR_REF}"
+          if [ -z "$REF" ]; then
+            REF=$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName 2>/dev/null || true)
+          fi
+          REF="${REF:-main}"
+          echo "Building upstream ref: $REF"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
       - name: Check out this repository (the Android layer lives here)
@@ -68,6 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
           PUBLISH: ${{ inputs.publish }}
+          REF: ${{ steps.ref.outputs.ref }}
         run: |
           # One release per upstream version. Later commits, or changes to the Android layer, do not make a new
           # release of the same version; to rebuild one, run the workflow with "force". With "publish" unchecked
@@ -76,6 +88,7 @@ jobs:
           VER=$(grep -m1 '^version' src/Cargo.toml | cut -d'"' -f2)
           SHA=$(git -C src rev-parse --short=7 HEAD)
           TAG="android-v${VER}"
+          echo "Upstream ref ${REF} is at ${SHA}, Cargo.toml version ${VER}, so the release tag is ${TAG}"
           {
             echo "version=$VER"
             echo "sha=$SHA"
@@ -89,6 +102,7 @@ jobs:
               echo "skip=false" >> "$GITHUB_OUTPUT"
             else
               echo "Release $TAG already exists - nothing to do."
+              echo "If upstream has a newer version than ${VER}, check the UPSTREAM_REF repository variable (it overrides the newest-release default)."
               echo "skip=true" >> "$GITHUB_OUTPUT"
             fi
           else
